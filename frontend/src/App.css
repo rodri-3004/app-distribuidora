@@ -182,3 +182,13 @@
     border-right-color: var(--border);
   }
 }
+
+button:hover {
+  opacity: 0.9;
+}
+input[type="number"] {
+  padding: 4px;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  text-align: center;
+}

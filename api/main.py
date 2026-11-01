@@ -1,14 +1,11 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware  # <-- Agregá esta línea acá arriba
-import sqlite3
-from pathlib import Path
-from pydantic import BaseModel
-from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 import sqlite3
 from pathlib import Path
 from pydantic import BaseModel
 from typing import List, Optional
 import hashlib
+from datetime import datetime
 
 app = FastAPI(
     title="API Distribuidora de Limpieza",
@@ -16,7 +13,6 @@ app = FastAPI(
     description="API de la plataforma piloto para gestión de pedidos, stock, clientes y autenticación."
 )
 
-# <-- 2. Agregá el bloque de CORS justo aquí abajo:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
@@ -84,7 +80,6 @@ def registrar_usuario(datos: UsuarioRegistro):
     cursor = conexion.cursor()
     
     try:
-        # Verificar unicidad (email o dni_cuil duplicado)
         cursor.execute("SELECT id FROM usuarios WHERE email = ? OR dni_cuil = ?", (datos.email, datos.dni_cuil))
         if cursor.fetchone():
             raise HTTPException(status_code=400, detail="El email o DNI/CUIL ya se encuentran registrados.")
@@ -230,8 +225,42 @@ def crear_pedido(pedido: PedidoCreate):
         """, (pedido.cliente_id, total_pedido, pedido_id))
 
         conexion.commit()
+
+        # ==========================================
+        # GENERACIÓN AUTOMÁTICA DE NOTA DE PEDIDO
+        # ==========================================
+        carpeta_docs = Path(__file__).parent.parent / "documentos_pedidos"
+        carpeta_docs.mkdir(parents=True, exist_ok=True)
+        
+        nombre_archivo = carpeta_docs / f"pedido_{pedido_id}.txt"
+        
+        contenido_nota = f"""========================================
+NOTA DE PEDIDO B2B - DISTRIBUIDORA
+========================================
+Nº de Pedido: #{pedido_id}
+Fecha: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+Cliente: {cliente['nombre']} {cliente['apellido']} (ID: {cliente['id']})
+Email: {cliente['email']}
+Estado: RECIBIDO
+Observaciones: {pedido.observaciones_agente or 'Ninguna'}
+----------------------------------------
+DETALLE DE PRODUCTOS:
+"""
+        for det in detalles_a_procesar:
+            cursor.execute("SELECT nombre FROM productos WHERE id = ?", (det["producto_id"],))
+            prod_info = cursor.fetchone()
+            nombre_prod = prod_info["nombre"] if prod_info else f"ID {det['producto_id']}"
+            subtotal_item = det["cantidad"] * det["precio_unitario"]
+            contenido_nota += f"- {nombre_prod} x {det['cantidad']} un. | Unitario: ${det['precio_unitario']:,.2f} | Subtotal: ${subtotal_item:,.2f}\n"
+
+        contenido_nota += f"""----------------------------------------
+TOTAL GENERAL: ${total_pedido:,.2f}
+========================================
+"""
+        nombre_archivo.write_text(contenido_nota, encoding="utf-8")
+
         return {
-            "mensaje": "Pedido creado con éxito y validado por la API",
+            "mensaje": "Pedido creado con éxito, stock descontado y nota generada.",
             "pedido_id": pedido_id,
             "total_pedido": total_pedido,
             "nuevo_saldo_cliente": nuevo_saldo
@@ -245,3 +274,17 @@ def crear_pedido(pedido: PedidoCreate):
         raise HTTPException(status_code=500, detail=f"Error interno al procesar el pedido: {str(e)}")
     finally:
         conexion.close()
+
+@app.get("/pedidos/cliente/{cliente_id}", summary="Listar pedidos de un cliente específico")
+def listar_pedidos_cliente(cliente_id: int):
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    cursor.execute("""
+        SELECT id, fecha, estado, total, observaciones_agente 
+        FROM pedidos 
+        WHERE cliente_id = ? 
+        ORDER BY id DESC
+    """, (cliente_id,))
+    pedidos = [dict(fila) for fila in cursor.fetchall()]
+    conexion.close()
+    return pedidos
