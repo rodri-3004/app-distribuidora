@@ -1,4 +1,9 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware  # <-- Agregá esta línea acá arriba
+import sqlite3
+from pathlib import Path
+from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException
 import sqlite3
 from pathlib import Path
 from pydantic import BaseModel
@@ -9,6 +14,15 @@ app = FastAPI(
     title="API Distribuidora de Limpieza",
     version="1.0",
     description="API de la plataforma piloto para gestión de pedidos, stock, clientes y autenticación."
+)
+
+# <-- 2. Agregá el bloque de CORS justo aquí abajo:
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 RUTA_DB = Path(__file__).parent.parent / "base_datos" / "distribuidora.db"
