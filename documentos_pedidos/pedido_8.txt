@@ -1,0 +1,16 @@
+========================================
+NOTA DE PEDIDO B2B - DISTRIBUIDORA
+========================================
+Nº de Pedido: #8
+Fecha: 2026-11-01 08:25:10
+Cliente: Limpieza Total S.A. (CUIT: 30-71112222-3) - ID: 1
+Estado: RECIBIDO
+Observaciones: Pedido web B2B - DistriApp
+----------------------------------------
+DETALLE DE PRODUCTOS:
+- Lavandina Concentrada 1L x 3 un. | Unitario: $1,200.00 | Subtotal: $3,600.00
+- Detergente Desengrasante 500ml x 2 un. | Unitario: $950.00 | Subtotal: $1,900.00
+- Desinfectante de Pisos Pino 5L x 3 un. | Unitario: $4,500.00 | Subtotal: $13,500.00
+----------------------------------------
+TOTAL GENERAL: $19,000.00
+========================================

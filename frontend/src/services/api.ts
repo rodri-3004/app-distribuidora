@@ -24,3 +24,10 @@ export async function obtenerProductos() {
   }
   return await response.json();
 }
+export async function obtenerPedidosCliente(clienteId: number) {
+  const response = await fetch(`${API_URL}/pedidos/cliente/${clienteId}`);
+  if (!response.ok) {
+    throw new Error("Error al obtener el historial de pedidos.");
+  }
+  return await response.json();
+}
