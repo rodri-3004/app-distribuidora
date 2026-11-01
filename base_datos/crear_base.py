@@ -10,6 +10,7 @@ def conectar():
     return conexion
 
 TABLAS = [
+    # 1. Tabla de Clientes (Globales / Cuentas Corrientes)
     """
     CREATE TABLE IF NOT EXISTS clientes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -22,17 +23,37 @@ TABLAS = [
             CHECK (estado IN ('ACTIVO', 'BLOQUEADO_POR_DEUDA'))
     )
     """,
+    # 2. Tabla de Usuarios (Actualizada con campos de registro, Google OAuth y verificación)
     """
     CREATE TABLE IF NOT EXISTS usuarios (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        usuario TEXT NOT NULL UNIQUE,
-        clave_hash TEXT NOT NULL,
-        rol TEXT NOT NULL CHECK (rol IN ('admin', 'cliente')),
+        nombre TEXT,
+        apellido TEXT,
+        usuario TEXT UNIQUE,
+        email TEXT UNIQUE NOT NULL,
+        dni_cuil TEXT UNIQUE,
+        clave_hash TEXT,
+        google_id TEXT UNIQUE,
+        verificado INTEGER DEFAULT 0,
+        token_verificacion TEXT,
+        rol TEXT NOT NULL DEFAULT 'cliente' CHECK (rol IN ('admin', 'cliente')),
         cliente_id INTEGER,
-        FOREIGN KEY (cliente_id) REFERENCES clientes (id),
-        CHECK (rol = 'admin' OR cliente_id IS NOT NULL)
+        FOREIGN KEY (cliente_id) REFERENCES clientes (id)
     )
     """,
+    # 3. Tabla de Clientes Propios (Cartera comercial que gestiona cada usuario)
+    """
+    CREATE TABLE IF NOT EXISTS clientes_propios (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        usuario_id INTEGER NOT NULL,
+        nombre_razon_social TEXT NOT NULL,
+        direccion TEXT NOT NULL,
+        cuit_dni TEXT NOT NULL,
+        tipo_condicion TEXT NOT NULL,
+        FOREIGN KEY (usuario_id) REFERENCES usuarios (id) ON DELETE CASCADE
+    )
+    """,
+    # 4. Tabla de Productos
     """
     CREATE TABLE IF NOT EXISTS productos (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -43,7 +64,7 @@ TABLAS = [
         stock_reservado INTEGER NOT NULL DEFAULT 0 CHECK (stock_reservado >= 0),
         peso_kg REAL CHECK (peso_kg IS NULL OR peso_kg > 0),
         volumen_dm3 REAL CHECK (volumen_dm3 IS NULL OR volumen_dm3 > 0),
-        imagen_url TEXT,
+        imagen_url TEXT DEFAULT 'default.png',
         activo INTEGER NOT NULL DEFAULT 1 CHECK (activo IN (0, 1)),
         CHECK (stock_reservado <= stock_fisico)
     )
@@ -60,17 +81,21 @@ TABLAS = [
         FOREIGN KEY (producto_id) REFERENCES productos (id)
     )
     """,
+    # 5. Tabla de Pedidos (Actualizada con usuario_id y pdf_path para subagentes)
     """
     CREATE TABLE IF NOT EXISTS pedidos (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         cliente_id INTEGER NOT NULL,
+        usuario_id INTEGER,
         fecha TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         estado TEXT NOT NULL DEFAULT 'RECIBIDO' 
             CHECK (estado IN ('RECIBIDO', 'VALIDADO', 'PREPARADO', 'FACTURADO', 'ARMADO', 'CARGADO', 'EN_REPARTO', 'ENTREGADO', 'CERRADO', 'EXCEPCION')),
         total REAL NOT NULL DEFAULT 0 CHECK (total >= 0),
         mail_id TEXT,
         observaciones_agente TEXT,
-        FOREIGN KEY (cliente_id) REFERENCES clientes (id)
+        pdf_path TEXT,
+        FOREIGN KEY (cliente_id) REFERENCES clientes (id),
+        FOREIGN KEY (usuario_id) REFERENCES usuarios (id)
     )
     """,
     """
@@ -182,9 +207,6 @@ TABLAS = [
 def insertar_datos_prueba(conexion):
     cursor = conexion.cursor()
     
-    # Insertar 4 clientes de prueba
-    cursor.execute("PRAGMA table_info(clientes)")
-    # Comprobamos si ya hay clientes para no duplicar
     cursor.execute("SELECT COUNT(*) FROM clientes")
     if cursor.fetchone()[0] == 0:
         clientes_prueba = [
@@ -198,11 +220,10 @@ def insertar_datos_prueba(conexion):
             VALUES (?, ?, ?, ?, ?, ?)
         """, clientes_prueba)
 
-        # Insertar 8 productos de limpieza de prueba
         productos_prueba = [
-            ("LIM-001", "Lavandina Concentrada 1L", 1200.0, 100, 0, 1.1, 1.0, None, 1),
-            ("LIM-002", "Detergente Desengrasante 500ml", 950.0, 150, 0, 0.6, 0.5, None, 1),
-            ("LIM-003", "Desinfectante de Pisos Pino 5L", 4500.0, 50, 0, 5.2, 5.0, None, 1),
+            ("LIM-001", "Lavandina Concentrada 1L", 1200.0, 100, 0, 1.1, 1.0, "lavandina.png", 1),
+            ("LIM-002", "Detergente Desengrasante 500ml", 950.0, 150, 0, 0.6, 0.5, "detergente.png", 1),
+            ("LIM-003", "Desinfectante de Pisos Pino 5L", 4500.0, 50, 0, 5.2, 5.0, "desinfectante.png", 1),
             ("LIM-004", "Jabón Líquido para Ropa 3L", 3800.0, 80, 0, 3.2, 3.0, None, 1),
             ("LIM-005", "Multiuso Gatillo 750ml", 1400.0, 120, 0, 0.8, 0.7, None, 1),
             ("LIM-006", "Esponja Multiuso (Paquete x3)", 600.0, 200, 0, 0.1, 0.2, None, 1),
@@ -224,7 +245,7 @@ def crear_tablas():
     
     insertar_datos_prueba(conexion)
     conexion.close()
-    print("Base de datos estructurada por completo y lista.")
+    print("Base de datos estructurada por completo con tablas de usuarios, clientes propios y trazabilidad.")
 
 if __name__ == "__main__":
     crear_tablas()

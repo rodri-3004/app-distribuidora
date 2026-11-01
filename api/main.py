@@ -1,13 +1,14 @@
 from fastapi import FastAPI, HTTPException
 import sqlite3
 from pathlib import Path
-from pydantic import BaseModel       # <-- Arriba con los imports
-from typing import List, Optional    # <-- Arriba con los imports
+from pydantic import BaseModel
+from typing import List, Optional
+import hashlib
 
 app = FastAPI(
     title="API Distribuidora de Limpieza",
     version="1.0",
-    description="API de la plataforma piloto para gestión de pedidos, stock y clientes."
+    description="API de la plataforma piloto para gestión de pedidos, stock, clientes y autenticación."
 )
 
 RUTA_DB = Path(__file__).parent.parent / "base_datos" / "distribuidora.db"
@@ -19,6 +20,10 @@ def obtener_conexion():
     conexion.row_factory = sqlite3.Row
     conexion.execute("PRAGMA foreign_keys = ON")
     return conexion
+
+def generar_hash(clave: str) -> str:
+    """Función para hashear la contraseña con SHA-256 de forma segura"""
+    return hashlib.sha256(clave.encode('utf-8')).hexdigest()
 
 @app.get("/")
 def inicio():
@@ -44,7 +49,87 @@ def listar_clientes():
 
 
 # ==========================================
-# NUEVO: Modelos y Endpoint de Pedidos abajo
+# MÓDULO DE AUTENTICACIÓN Y USUARIOS
+# ==========================================
+
+class UsuarioRegistro(BaseModel):
+    nombre: str
+    apellido: str
+    usuario: str
+    email: str
+    dni_cuil: str
+    clave: str
+
+class UsuarioLogin(BaseModel):
+    email: str
+    clave: str
+
+@app.post("/registro", summary="Registrar nuevo usuario")
+def registrar_usuario(datos: UsuarioRegistro):
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    
+    try:
+        # Verificar unicidad (email o dni_cuil duplicado)
+        cursor.execute("SELECT id FROM usuarios WHERE email = ? OR dni_cuil = ?", (datos.email, datos.dni_cuil))
+        if cursor.fetchone():
+            raise HTTPException(status_code=400, detail="El email o DNI/CUIL ya se encuentran registrados.")
+        
+        clave_hash = generar_hash(datos.clave)
+        
+        cursor.execute("""
+            INSERT INTO usuarios (nombre, apellido, usuario, email, dni_cuil, clave_hash, rol, verificado)
+            VALUES (?, ?, ?, ?, ?, ?, 'cliente', 1)
+        """, (datos.nombre, datos.apellido, datos.usuario, datos.email, datos.dni_cuil, clave_hash))
+        
+        conexion.commit()
+        usuario_id = cursor.lastrowid
+        return {
+            "mensaje": "Usuario registrado con éxito.",
+            "usuario_id": usuario_id,
+            "email": datos.email
+        }
+    except sqlite3.IntegrityError as e:
+        conexion.rollback()
+        raise HTTPException(status_code=400, detail=f"Error de integridad en los datos: {str(e)}")
+    except HTTPException as he:
+        conexion.rollback()
+        raise he
+    finally:
+        conexion.close()
+
+@app.post("/login", summary="Iniciar sesión de usuario")
+def login_usuario(datos: UsuarioLogin):
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    
+    clave_hash = generar_hash(datos.clave)
+    
+    cursor.execute("""
+        SELECT id, nombre, apellido, email, rol FROM usuarios 
+        WHERE email = ? AND clave_hash = ?
+    """, (datos.email, clave_hash))
+    
+    usuario = cursor.fetchone()
+    conexion.close()
+    
+    if not usuario:
+        raise HTTPException(status_code=401, detail="Credenciales incorrectas o usuario no encontrado.")
+    
+    return {
+        "mensaje": "Login exitoso",
+        "usuario": {
+            "id": usuario["id"],
+            "nombre": usuario["nombre"],
+            "apellido": usuario["apellido"],
+            "email": usuario["email"],
+            "rol": usuario["rol"]
+        }
+    }
+
+
+# ==========================================
+# MÓDULO DE PEDIDOS (TRANSACCIONAL)
 # ==========================================
 
 class DetalleItem(BaseModel):
