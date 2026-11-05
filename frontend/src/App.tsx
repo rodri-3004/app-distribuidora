@@ -568,7 +568,7 @@ export default function App() {
             </div>
 
             <div style={{ display: 'flex', gap: '10px', marginBottom: '25px', overflowX: 'auto', paddingBottom: '5px' }}>
-              {['Todas', 'Bebidas y Jugos', 'Almacén y Comestibles', 'Snacks y Golosinas', 'Limpieza y Perfumería', 'Lácteos y Fríos'].map(cat => (
+              {['Todas', 'Ropa y Lavado', 'Superficies y Pisos', 'Baños y Sanitarios', 'Cocina y Desengrasantes', 'Accesorios y Utensilios'].map(cat => (
                 <button key={cat} onClick={() => setCategoriaSeleccionada(cat)} style={{ padding: '10px 18px', borderRadius: '24px', border: '1px solid #cbd5e1', background: categoriaSeleccionada === cat ? '#1e3a8a' : '#fff', color: categoriaSeleccionada === cat ? '#fff' : '#475569', fontSize: '13px', fontWeight: '600', cursor: 'pointer', whiteSpace: 'nowrap', boxShadow: '0 2px 4px rgba(0,0,0,0.02)', transition: 'all 0.2s' }}>{cat}</button>
               ))}
             </div>
