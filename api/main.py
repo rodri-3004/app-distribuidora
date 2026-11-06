@@ -1,4 +1,5 @@
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import sqlite3
@@ -6,7 +7,12 @@ from pathlib import Path
 from pydantic import BaseModel, EmailStr
 from typing import List, Optional
 import hashlib
-from datetime import datetime
+import hmac
+import os
+import secrets
+import bcrypt
+import jwt
+from datetime import datetime, timedelta, timezone
 import re
 import pandas as pd
 import io
@@ -19,8 +25,8 @@ from reportlab.lib import colors
 
 app = FastAPI(
     title="API Distribuidora de Limpieza",
-    version="1.35",
-    description="API B2B con Modelo Profesional de Stock Físico, Reservado y Disponible."
+    version="1.36",
+    description="API B2B con Modelo Profesional de Stock y Seguridad JWT."
 )
 
 app.add_middleware(
@@ -48,7 +54,6 @@ def obtener_conexion():
     return conexion
 
 def asegurar_esquema(cursor):
-    """Verifica y asegura columnas clave para aislamiento estricto por usuario"""
     cursor.execute("PRAGMA table_info(clientes)")
     col_clientes = [col["name"] for col in cursor.fetchall()]
     if "telefono" not in col_clientes:
@@ -65,7 +70,6 @@ def asegurar_esquema(cursor):
     if "usuario_id" not in col_pedidos:
         cursor.execute("ALTER TABLE pedidos ADD COLUMN usuario_id INTEGER DEFAULT 1")
 
-    # Asegurar que productos tenga stock_reservado
     cursor.execute("PRAGMA table_info(productos)")
     col_productos = [col["name"] for col in cursor.fetchall()]
     if "stock_reservado" not in col_productos:
@@ -73,6 +77,52 @@ def asegurar_esquema(cursor):
 
 def generar_hash(clave: str) -> str:
     return hashlib.sha256(clave.encode('utf-8')).hexdigest()
+
+# ==========================================
+# SEGURIDAD: CONTRASEÑAS (bcrypt) Y SESIÓN (token JWT)
+# ==========================================
+def cargar_clave_jwt() -> str:
+    clave = os.environ.get("JWT_SECRET")
+    if clave:
+        return clave
+    ruta = Path(__file__).parent / ".jwt_secret"
+    if not ruta.exists():
+        ruta.write_text(secrets.token_hex(32))
+    return ruta.read_text().strip()
+
+CLAVE_JWT = cargar_clave_jwt()
+HORAS_SESION = 8
+
+def hashear_clave(clave: str) -> str:
+    return bcrypt.hashpw(clave.encode("utf-8")[:72], bcrypt.gensalt()).decode("utf-8")
+
+def verificar_clave(clave: str, hash_guardado: str) -> bool:
+    if hash_guardado.startswith("$2"):
+        return bcrypt.checkpw(clave.encode("utf-8")[:72], hash_guardado.encode("utf-8"))
+    return hmac.compare_digest(generar_hash(clave), hash_guardado)
+
+def crear_token(usuario: dict) -> str:
+    ahora = datetime.now(timezone.utc)
+    carga = {"sub": str(usuario["id"]), "rol": usuario["rol"], "iat": ahora, "exp": ahora + timedelta(hours=HORAS_SESION)}
+    return jwt.encode(carga, CLAVE_JWT, algorithm="HS256")
+
+esquema_bearer = HTTPBearer(auto_error=False)
+
+def usuario_actual(credenciales: Optional[HTTPAuthorizationCredentials] = Depends(esquema_bearer)) -> dict:
+    if credenciales is None:
+        raise HTTPException(status_code=401, detail="Falta el token de sesión. Iniciá sesión de nuevo.")
+    try:
+        carga = jwt.decode(credenciales.credentials, CLAVE_JWT, algorithms=["HS256"])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="La sesión expiró. Iniciá sesión de nuevo.")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Token de sesión inválido.")
+    conexion = obtener_conexion()
+    fila = conexion.execute("SELECT id, nombre, apellido, email, usuario, rol FROM usuarios WHERE id = ?", (carga["sub"],)).fetchone()
+    conexion.close()
+    if not fila:
+        raise HTTPException(status_code=401, detail="El usuario de la sesión ya no existe.")
+    return dict(fila)
 
 def validar_dni_cuil(valor: str) -> bool:
     limpio = re.sub(r'\D', '', valor)
@@ -132,7 +182,7 @@ class PedidoCreate(BaseModel):
     cliente_id: Optional[int] = None
     datos_cliente: Optional[ClienteModel] = None
     observaciones_agente: Optional[str] = None
-    usuario_id: Optional[int] = 1
+    usuario_id: Optional[int] = 1  # Se ignora en el backend, se toma del token
     items: List[DetalleItem]
 
 
@@ -140,7 +190,7 @@ class PedidoCreate(BaseModel):
 # ENDPOINTS DE AUTENTICACIÓN
 # ==========================================
 
-@app.post("/registro", summary="Registrar nuevo usuario con validaciones estrictas")
+@app.post("/registro", summary="Registrar nuevo usuario")
 def registrar_usuario(datos: UsuarioRegistro):
     if not validar_dni_cuil(datos.dni_cuil):
         raise HTTPException(status_code=400, detail="El DNI o CUIT/CUIL ingresado no tiene un formato válido.")
@@ -154,9 +204,9 @@ def registrar_usuario(datos: UsuarioRegistro):
     try:
         cursor.execute("SELECT id FROM usuarios WHERE email = ? OR dni_cuil = ?", (datos.email, datos.dni_cuil))
         if cursor.fetchone():
-            raise HTTPException(status_code=400, detail="El email o DNI/CUIL ya se encuentran registrados en el sistema.")
+            raise HTTPException(status_code=400, detail="El email o DNI/CUIL ya se encuentran registrados.")
         
-        clave_hash = generar_hash(datos.clave)
+        clave_hash = hashear_clave(datos.clave)
         token_activacion = hashlib.md5(f"{datos.email}{datetime.now()}".encode('utf-8')).hexdigest()[:8].upper()
         
         username = datos.email.split("@")[0]
@@ -166,11 +216,7 @@ def registrar_usuario(datos: UsuarioRegistro):
         """, (datos.nombre, datos.apellido, datos.email, datos.dni_cuil, clave_hash, token_activacion, username))
         conexion.commit()
         
-        return {
-            "mensaje": "¡Registro exitoso! Ya puede iniciar sesión.",
-            "email": datos.email,
-            "token_debug": token_activacion
-        }
+        return {"mensaje": "¡Registro exitoso! Ya puede iniciar sesión.", "email": datos.email, "token_debug": token_activacion}
     except HTTPException as he:
         conexion.rollback()
         raise he
@@ -180,17 +226,16 @@ def registrar_usuario(datos: UsuarioRegistro):
     finally:
         conexion.close()
 
-@app.post("/activar", summary="Activar cuenta mediante token simulado (Flexible)")
+@app.post("/activar", summary="Activar cuenta mediante token simulado")
 def activar_cuenta(email: EmailStr, token: str):
     conexion = obtener_conexion()
     cursor = conexion.cursor()
-    
     cursor.execute("SELECT id, verificado FROM usuarios WHERE email = ?", (email,))
     usuario_row = cursor.fetchone()
     
     if not usuario_row:
         conexion.close()
-        raise HTTPException(status_code=400, detail="Correo electrónico no encontrado en el sistema.")
+        raise HTTPException(status_code=400, detail="Correo electrónico no encontrado.")
     
     usuario = dict(usuario_row)
     if usuario["verificado"] == 1:
@@ -200,33 +245,38 @@ def activar_cuenta(email: EmailStr, token: str):
     cursor.execute("UPDATE usuarios SET verificado = 1, token_verificacion = NULL WHERE id = ?", (usuario["id"],))
     conexion.commit()
     conexion.close()
-    
     return {"mensaje": "¡Cuenta activada con éxito! Ya puede iniciar sesión."}
 
-@app.post("/login", summary="Iniciar sesión validando credenciales y retornando identidad de sesión")
+@app.post("/login", summary="Iniciar sesión: devuelve la identidad y un token de sesión")
 def login_usuario(datos: UsuarioLogin):
     conexion = obtener_conexion()
     cursor = conexion.cursor()
-    clave_hash = generar_hash(datos.clave)
-    
     cursor.execute("""
-        SELECT id, nombre, apellido, email, rol, verificado, usuario FROM usuarios 
-        WHERE email = ? AND clave_hash = ?
-    """, (datos.email, clave_hash))
+        SELECT id, nombre, apellido, email, rol, verificado, usuario, clave_hash FROM usuarios
+        WHERE email = ?
+    """, (datos.email,))
     usuario_row = cursor.fetchone()
-    conexion.close()
-    
-    if not usuario_row:
+
+    if not usuario_row or not usuario_row["clave_hash"] or not verificar_clave(datos.clave, usuario_row["clave_hash"]):
+        conexion.close()
         raise HTTPException(status_code=401, detail="Credenciales incorrectas o usuario no encontrado.")
-    
+
     usuario = dict(usuario_row)
     if usuario["verificado"] == 0:
+        conexion.close()
         raise HTTPException(status_code=403, detail="Cuenta no activada.")
-    
+
+    if not usuario["clave_hash"].startswith("$2"):
+        cursor.execute("UPDATE usuarios SET clave_hash = ? WHERE id = ?", (hashear_clave(datos.clave), usuario["id"]))
+        conexion.commit()
+    conexion.close()
+
     username_asignado = usuario.get("usuario") or usuario["email"].split("@")[0]
-    
+
     return {
         "mensaje": "Login exitoso",
+        "access_token": crear_token(usuario),
+        "token_type": "bearer",
         "usuario": {
             "id": usuario["id"],
             "nombre": usuario["nombre"],
@@ -236,6 +286,10 @@ def login_usuario(datos: UsuarioLogin):
             "username": username_asignado
         }
     }
+
+@app.get("/yo", summary="Devuelve el usuario de la sesión actual")
+def quien_soy(usuario: dict = Depends(usuario_actual)):
+    return usuario
 
 @app.post("/recuperar-password", summary="Solicitar recuperación de contraseña")
 def recuperar_password(datos: RecuperarPasswordModel):
@@ -271,13 +325,13 @@ def resetear_password(datos: ResetPasswordModel):
         conexion.close()
         raise HTTPException(status_code=400, detail="Código de recuperación inválido o expirado.")
     
-    nuevo_hash = generar_hash(datos.nueva_clave)
+    nuevo_hash = hashear_clave(datos.nueva_clave)
     cursor.execute("UPDATE usuarios SET clave_hash = ?, token_verificacion = NULL WHERE email = ?", (nuevo_hash, datos.email))
     conexion.commit()
     conexion.close()
     return {"mensaje": "Contraseña actualizada con éxito."}
 
-@app.post("/cambiar-password", summary="Cambiar contraseña de usuario autenticado")
+@app.post("/cambiar-password", summary="Cambiar contraseña")
 def cambiar_password(datos: CambiarPasswordModel):
     if datos.nueva_clave != datos.confirmar_nueva_clave:
         raise HTTPException(status_code=400, detail="Las nuevas contraseñas no coinciden.")
@@ -286,15 +340,14 @@ def cambiar_password(datos: CambiarPasswordModel):
 
     conexion = obtener_conexion()
     cursor = conexion.cursor()
-    hash_actual = generar_hash(datos.clave_actual)
-    cursor.execute("SELECT id FROM usuarios WHERE id = ? AND clave_hash = ?", (datos.usuario_id, hash_actual))
+    cursor.execute("SELECT id, clave_hash FROM usuarios WHERE id = ?", (datos.usuario_id,))
     usuario = cursor.fetchone()
-    
-    if not usuario:
+
+    if not usuario or not usuario["clave_hash"] or not verificar_clave(datos.clave_actual, usuario["clave_hash"]):
         conexion.close()
         raise HTTPException(status_code=401, detail="La contraseña actual es incorrecta.")
     
-    nuevo_hash = generar_hash(datos.nueva_clave)
+    nuevo_hash = hashear_clave(datos.nueva_clave)
     cursor.execute("UPDATE usuarios SET clave_hash = ? WHERE id = ?", (nuevo_hash, datos.usuario_id))
     conexion.commit()
     conexion.close()
@@ -302,10 +355,10 @@ def cambiar_password(datos: CambiarPasswordModel):
 
 
 # ==========================================
-# PRODUCTOS, CATEGORÍAS & IMPORTACIÓN (PROTEGIENDO STOCK)
+# PRODUCTOS, CATEGORÍAS & IMPORTACIÓN
 # ==========================================
 
-@app.get("/productos", summary="Listar catálogo global de productos activos con stock disponible real")
+@app.get("/productos", summary="Listar catálogo global")
 def listar_productos():
     conexion = obtener_conexion()
     cursor = conexion.cursor()
@@ -325,8 +378,8 @@ def listar_categorias():
     conexion.close()
     return categorias
 
-@app.post("/productos/importar-excel", summary="Actualizar precios masivamente protegiendo el stock físico y reservado")
-async def importar_productos_excel(file: UploadFile = File(...)):
+@app.post("/productos/importar-excel", summary="Actualizar precios masivamente")
+async def importar_productos_excel(file: UploadFile = File(...), usuario: dict = Depends(usuario_actual)):
     contents = await file.read()
     try:
         if file.filename.endswith('.csv'):
@@ -346,47 +399,34 @@ async def importar_productos_excel(file: UploadFile = File(...)):
             precio = row.get('precio')
             
             if codigo and pd.notna(precio):
-                # Solo actualizamos el precio, protegiendo el stock físico y reservado actual del depósito
                 cursor.execute("UPDATE productos SET precio = ? WHERE codigo = ?", (float(precio), codigo))
                 actualizados += 1
                 
         conexion.commit()
         conexion.close()
-        return {"mensaje": f"Se actualizaron los precios de {actualizados} productos correctamente sin alterar el stock del depósito."}
+        return {"mensaje": f"Se actualizaron los precios de {actualizados} productos correctamente."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al procesar la planilla: {str(e)}")
 
 
 # ==========================================
-# CLIENTES (AISLAMIENTO ESTRICTO POR SESIÓN)
+# CLIENTES (PROTEGIDOS POR TOKEN)
 # ==========================================
 
 @app.get("/clientes", summary="Listar clientes exclusivos de la sesión del usuario")
-def listar_clientes(
-    usuario: Optional[str] = Query(None, description="Nombre de usuario o preventista logueado"),
-    usuario_id: Optional[int] = Query(None, description="ID numérico de la sesión")
-):
+def listar_clientes(usuario_sesion: dict = Depends(usuario_actual)):
     conexion = obtener_conexion()
     cursor = conexion.cursor()
     try:
         asegurar_esquema(cursor)
         conexion.commit()
 
-        if usuario:
-            cursor.execute("""
-                SELECT * FROM clientes 
-                WHERE usuario_dueno = ? 
-                ORDER BY id DESC
-            """, (usuario,))
-        elif usuario_id:
-            cursor.execute("""
-                SELECT c.* FROM clientes c
-                JOIN usuarios u ON (c.usuario_dueno = u.usuario OR c.usuario_dueno = u.email)
-                WHERE u.id = ?
-                ORDER BY c.id DESC
-            """, (usuario_id,))
-        else:
+        username = usuario_sesion.get("usuario") or usuario_sesion["email"].split("@")[0]
+
+        if usuario_sesion["rol"] == "admin":
             cursor.execute("SELECT * FROM clientes ORDER BY id DESC")
+        else:
+            cursor.execute("SELECT * FROM clientes WHERE usuario_dueno = ? ORDER BY id DESC", (username,))
             
         filas = cursor.fetchall()
         clientes = []
@@ -404,15 +444,17 @@ def listar_clientes(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/clientes", summary="Crear nuevo cliente vinculado a la sesión activa")
-def crear_cliente(c: ClienteModel):
+def crear_cliente(c: ClienteModel, usuario_sesion: dict = Depends(usuario_actual)):
     conexion = obtener_conexion()
     cursor = conexion.cursor()
     try:
         asegurar_esquema(cursor)
+        username = usuario_sesion.get("usuario") or usuario_sesion["email"].split("@")[0]
+
         cursor.execute("""
             INSERT INTO clientes (razon_social, cuit, direccion_entrega, telefono, condicion_fiscal, medio_pago, limite_credito, saldo_actual, estado, usuario_dueno)
             VALUES (?, ?, ?, ?, ?, ?, 0.0, 0.0, 'ACTIVO', ?)
-        """, (c.razon_social, c.cuit, c.direccion, c.telefono, c.condicion_fiscal, c.medio_pago, c.usuario_dueno))
+        """, (c.razon_social, c.cuit, c.direccion, c.telefono, c.condicion_fiscal, c.medio_pago, username))
         conexion.commit()
         return {"mensaje": "Cliente creado con éxito en su cartera", "id": cursor.lastrowid}
     except Exception as e:
@@ -421,8 +463,8 @@ def crear_cliente(c: ClienteModel):
     finally:
         conexion.close()
 
-@app.post("/clientes/importar-excel", summary="Importar clientes masivamente mediante Excel/CSV")
-async def importar_clientes_excel(file: UploadFile = File(...), usuario_dueno: str = Form("admin")):
+@app.post("/clientes/importar-excel", summary="Importar clientes masivamente")
+async def importar_clientes_excel(file: UploadFile = File(...), usuario_sesion: dict = Depends(usuario_actual)):
     contents = await file.read()
     try:
         if file.filename.endswith('.csv'):
@@ -435,7 +477,9 @@ async def importar_clientes_excel(file: UploadFile = File(...), usuario_dueno: s
         cursor = conexion.cursor()
         asegurar_esquema(cursor)
         
+        username = usuario_sesion.get("usuario") or usuario_sesion["email"].split("@")[0]
         importados = 0
+        
         for _, row in df.iterrows():
             razon_social = str(row.get('razon_social') or row.get('nombre') or '').strip()
             cuit = str(row.get('cuit') or row.get('dni') or '').strip()
@@ -443,13 +487,12 @@ async def importar_clientes_excel(file: UploadFile = File(...), usuario_dueno: s
             telefono = str(row.get('telefono') or '').strip()
             condicion = str(row.get('condicion_fiscal') or 'Responsable Inscripto').strip()
             pago = str(row.get('medio_pago') or 'Efectivo contra entrega').strip()
-            dueno = str(row.get('usuario_dueno') or usuario_dueno).strip()
             
             if razon_social and cuit:
                 cursor.execute("""
                     INSERT INTO clientes (razon_social, cuit, direccion_entrega, telefono, condicion_fiscal, medio_pago, limite_credito, saldo_actual, estado, usuario_dueno)
                     VALUES (?, ?, ?, ?, ?, ?, 0.0, 0.0, 'ACTIVO', ?)
-                """, (razon_social, cuit, direccion, telefono, condicion, pago, dueno))
+                """, (razon_social, cuit, direccion, telefono, condicion, pago, username))
                 importados += 1
                 
         conexion.commit()
@@ -459,16 +502,21 @@ async def importar_clientes_excel(file: UploadFile = File(...), usuario_dueno: s
         raise HTTPException(status_code=500, detail=f"Error al importar clientes: {str(e)}")
 
 @app.put("/clientes/{cliente_id}", summary="Actualizar datos de cliente")
-def actualizar_cliente(cliente_id: int, c: ClienteModel):
+def actualizar_cliente(cliente_id: int, c: ClienteModel, usuario_sesion: dict = Depends(usuario_actual)):
     conexion = obtener_conexion()
     cursor = conexion.cursor()
     try:
         asegurar_esquema(cursor)
+        # Mantenemos el dueño original para no romper la cartera
+        cursor.execute("SELECT usuario_dueno FROM clientes WHERE id = ?", (cliente_id,))
+        dueno_row = cursor.fetchone()
+        dueno = dueno_row["usuario_dueno"] if dueno_row else c.usuario_dueno
+
         cursor.execute("""
             UPDATE clientes 
             SET razon_social = ?, cuit = ?, direccion_entrega = ?, telefono = ?, condicion_fiscal = ?, medio_pago = ?, usuario_dueno = ?
             WHERE id = ?
-        """, (c.razon_social, c.cuit, c.direccion, c.telefono, c.condicion_fiscal, c.medio_pago, c.usuario_dueno, cliente_id))
+        """, (c.razon_social, c.cuit, c.direccion, c.telefono, c.condicion_fiscal, c.medio_pago, dueno, cliente_id))
         conexion.commit()
         return {"mensaje": "Cliente actualizado con éxito"}
     except Exception as e:
@@ -478,7 +526,7 @@ def actualizar_cliente(cliente_id: int, c: ClienteModel):
         conexion.close()
 
 @app.delete("/clientes/{cliente_id}", summary="Eliminar cliente")
-def eliminar_cliente(cliente_id: int):
+def eliminar_cliente(cliente_id: int, usuario_sesion: dict = Depends(usuario_actual)):
     conexion = obtener_conexion()
     cursor = conexion.cursor()
     try:
@@ -493,11 +541,11 @@ def eliminar_cliente(cliente_id: int):
 
 
 # ==========================================
-# PEDIDOS (MODELO PROFESIONAL DE RESERVA)
+# PEDIDOS (PROTEGIDOS POR TOKEN)
 # ==========================================
 
-@app.post("/pedidos", summary="Crear pedido incrementando stock reservado (Disponible baja de inmediato)")
-def crear_pedido(pedido: PedidoCreate):
+@app.post("/pedidos", summary="Crear pedido incrementando stock reservado")
+def crear_pedido(pedido: PedidoCreate, usuario_sesion: dict = Depends(usuario_actual)):
     conexion = obtener_conexion()
     cursor = conexion.cursor()
     try:
@@ -513,10 +561,11 @@ def crear_pedido(pedido: PedidoCreate):
             cliente["direccion"] = cliente.get("direccion_entrega", "")
         elif pedido.datos_cliente:
             c = pedido.datos_cliente
+            username = usuario_sesion.get("usuario") or usuario_sesion["email"].split("@")[0]
             cursor.execute("""
                 INSERT INTO clientes (razon_social, cuit, direccion_entrega, telefono, condicion_fiscal, medio_pago, limite_credito, saldo_actual, estado, usuario_dueno)
                 VALUES (?, ?, ?, ?, ?, ?, 0.0, 0.0, 'ACTIVO', ?)
-            """, (c.razon_social, c.cuit, c.direccion, c.telefono, c.condicion_fiscal, c.medio_pago, c.usuario_dueno))
+            """, (c.razon_social, c.cuit, c.direccion, c.telefono, c.condicion_fiscal, c.medio_pago, username))
                 
             cliente_id = cursor.lastrowid
             cursor.execute("SELECT * FROM clientes WHERE id = ?", (cliente_id,))
@@ -557,10 +606,11 @@ def crear_pedido(pedido: PedidoCreate):
 
         fecha_actual = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
+        # Usamos el ID del token, NO el del frontend
         cursor.execute("""
             INSERT INTO pedidos (cliente_id, fecha, estado, total, observaciones_agente, usuario_id)
             VALUES (?, ?, 'RECIBIDO', ?, ?, ?)
-        """, (cliente_id, fecha_actual, total_pedido, pedido.observaciones_agente, pedido.usuario_id))
+        """, (cliente_id, fecha_actual, total_pedido, pedido.observaciones_agente, usuario_sesion["id"]))
         pedido_id = cursor.lastrowid
 
         for det in detalles_a_procesar:
@@ -569,8 +619,6 @@ def crear_pedido(pedido: PedidoCreate):
                 VALUES (?, ?, ?, ?)
             """, (pedido_id, det["producto_id"], det["cantidad"], det["precio_unitario"]))
             
-            # Incrementar stock reservado en el depósito (Físico intacto hasta preparar)
-            # Reserva atómica: solo se aplica si todavía hay stock disponible
             cursor.execute("""
                 UPDATE productos
                 SET stock_reservado = stock_reservado + ?
@@ -681,8 +729,8 @@ def crear_pedido(pedido: PedidoCreate):
     finally:
         conexion.close()
 
-@app.post("/pedidos/{pedido_id}/preparar", summary="Preparar pedido: descuenta el físico del depósito y consume la reserva")
-def preparar_pedido(pedido_id: int):
+@app.post("/pedidos/{pedido_id}/preparar", summary="Preparar pedido: descuenta físico y reserva")
+def preparar_pedido(pedido_id: int, usuario_sesion: dict = Depends(usuario_actual)):
     conexion = obtener_conexion()
     cursor = conexion.cursor()
     try:
@@ -690,7 +738,7 @@ def preparar_pedido(pedido_id: int):
         pedido = cursor.fetchone()
         if not pedido:
             raise HTTPException(status_code=404, detail="Pedido no encontrado.")
-        # Cuando exista el agente Validador, dejar solo VALIDADO
+        
         if pedido["estado"] not in ("RECIBIDO", "VALIDADO"):
             raise HTTPException(status_code=400, detail=f"Solo se puede preparar un pedido RECIBIDO o VALIDADO (estado actual: {pedido['estado']}).")
 
@@ -702,11 +750,11 @@ def preparar_pedido(pedido_id: int):
                 WHERE id = ? AND stock_reservado >= ? AND stock_fisico >= ?
             """, (det["cantidad"], det["cantidad"], det["producto_id"], det["cantidad"], det["cantidad"]))
             if cursor.rowcount == 0:
-                raise HTTPException(status_code=409, detail="Inconsistencia de stock: la reserva no alcanza para preparar este pedido.")
+                raise HTTPException(status_code=409, detail="Inconsistencia de stock: la reserva no alcanza.")
 
         cursor.execute("UPDATE pedidos SET estado = 'PREPARADO' WHERE id = ?", (pedido_id,))
         conexion.commit()
-        return {"mensaje": f"Pedido #{pedido_id} preparado. Stock físico descontado correctamente."}
+        return {"mensaje": f"Pedido #{pedido_id} preparado. Stock físico descontado."}
     except HTTPException:
         conexion.rollback()
         raise
@@ -716,8 +764,8 @@ def preparar_pedido(pedido_id: int):
     finally:
         conexion.close()
 
-@app.post("/pedidos/{pedido_id}/cancelar", summary="Cancelar pedido (RECIBIDO o VALIDADO): libera la reserva")
-def cancelar_pedido(pedido_id: int):
+@app.post("/pedidos/{pedido_id}/cancelar", summary="Cancelar pedido: libera la reserva")
+def cancelar_pedido(pedido_id: int, usuario_sesion: dict = Depends(usuario_actual)):
     conexion = obtener_conexion()
     cursor = conexion.cursor()
     try:
@@ -727,10 +775,9 @@ def cancelar_pedido(pedido_id: int):
             raise HTTPException(status_code=404, detail="Pedido no encontrado.")
         if pedido["estado"] == "CANCELADO":
             raise HTTPException(status_code=400, detail="El pedido ya estaba cancelado.")
-        # Después de preparado, la reserva ya se consumió y el físico salió del depósito:
-        # cancelar requeriría devolver mercadería, un proceso que todavía no existe.
+        
         if pedido["estado"] not in ("RECIBIDO", "VALIDADO"):
-            raise HTTPException(status_code=400, detail=f"Solo se puede cancelar un pedido RECIBIDO o VALIDADO (estado actual: {pedido['estado']}).")
+            raise HTTPException(status_code=400, detail=f"Solo se puede cancelar un pedido RECIBIDO o VALIDADO.")
 
         cursor.execute("SELECT producto_id, cantidad FROM detalle_pedidos WHERE pedido_id = ?", (pedido_id,))
         for det in cursor.fetchall():
@@ -740,12 +787,12 @@ def cancelar_pedido(pedido_id: int):
                 WHERE id = ? AND stock_reservado >= ?
             """, (det["cantidad"], det["producto_id"], det["cantidad"]))
             if cursor.rowcount == 0:
-                raise HTTPException(status_code=409, detail="Inconsistencia de stock: no hay reserva suficiente para liberar.")
+                raise HTTPException(status_code=409, detail="Inconsistencia de stock: no hay reserva suficiente.")
 
         cursor.execute("UPDATE clientes SET saldo_actual = saldo_actual - ? WHERE id = ?", (pedido["total"], pedido["cliente_id"]))
         cursor.execute("UPDATE pedidos SET estado = 'CANCELADO' WHERE id = ?", (pedido_id,))
         conexion.commit()
-        return {"mensaje": f"Pedido #{pedido_id} cancelado. Reserva liberada correctamente."}
+        return {"mensaje": f"Pedido #{pedido_id} cancelado. Reserva liberada."}
     except HTTPException:
         conexion.rollback()
         raise
@@ -755,28 +802,28 @@ def cancelar_pedido(pedido_id: int):
     finally:
         conexion.close()
 
-@app.get("/pedidos/todos", summary="Listar únicamente el historial de pedidos de la sesión activa")
-def listar_todos_pedidos(usuario_id: Optional[int] = Query(None, description="ID del usuario logueado en la sesión")):
+@app.get("/pedidos/todos", summary="Listar historial de pedidos de la sesión")
+def listar_todos_pedidos(usuario_sesion: dict = Depends(usuario_actual)):
     conexion = obtener_conexion()
     cursor = conexion.cursor()
     asegurar_esquema(cursor)
     conexion.commit()
 
-    if usuario_id:
-        cursor.execute("""
-            SELECT p.id, p.fecha, p.estado, p.total, p.observaciones_agente, c.razon_social, p.usuario_id
-            FROM pedidos p 
-            LEFT JOIN clientes c ON p.cliente_id = c.id 
-            WHERE p.usuario_id = ?
-            ORDER BY p.fecha DESC
-        """, (usuario_id,))
-    else:
+    if usuario_sesion["rol"] == "admin":
         cursor.execute("""
             SELECT p.id, p.fecha, p.estado, p.total, p.observaciones_agente, c.razon_social, p.usuario_id
             FROM pedidos p 
             LEFT JOIN clientes c ON p.cliente_id = c.id 
             ORDER BY p.fecha DESC
         """)
+    else:
+        cursor.execute("""
+            SELECT p.id, p.fecha, p.estado, p.total, p.observaciones_agente, c.razon_social, p.usuario_id
+            FROM pedidos p 
+            LEFT JOIN clientes c ON p.cliente_id = c.id 
+            WHERE p.usuario_id = ?
+            ORDER BY p.fecha DESC
+        """, (usuario_sesion["id"],))
         
     pedidos = [dict(fila) for fila in cursor.fetchall()]
     conexion.close()

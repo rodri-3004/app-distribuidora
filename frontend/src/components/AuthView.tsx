@@ -54,6 +54,11 @@ export const AuthView: React.FC<AuthViewProps> = ({ onLoginSuccess }) => {
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || 'Error al iniciar sesión');
 
+      // ¡AQUÍ GUARDAMOS EL TOKEN EN EL NAVEGADOR!
+      if (data.access_token) {
+        localStorage.setItem('token', data.access_token);
+      }
+
       onLoginSuccess(data.usuario);
     } catch (err: any) {
       setErrorMsg(err.message);

@@ -95,15 +95,19 @@ function ChangePasswordModal({ isOpen, onClose, usuarioId }: { isOpen: boolean; 
     }
 
     if (!passwordRules.isAllRulesMet) {
-      setError('La nueva contraseña no cumple con los requisitos de seguridad o no coincide.');
+      setError('La nueva contraseña no cumple con los requisitos o no coincide.');
       return;
     }
 
     setLoading(true);
     try {
+      const token = localStorage.getItem('token');
       const response = await fetch(`${API_URL}/cambiar-password`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}` 
+        },
         body: JSON.stringify({
           usuario_id: usuarioId,
           clave_actual: actualPassword,
@@ -235,15 +239,22 @@ export default function App() {
       const prods = await obtenerProductos();
       setProductos(prods);
 
-      const userId = usuarioLogueado?.id;
-      const username = usuarioLogueado?.username || usuarioLogueado?.email?.split('@')[0];
+      const token = localStorage.getItem('token');
+      const headers = { 'Authorization': `Bearer ${token}` };
 
-      // Peticiones filtradas por el usuario actual
-      const resClientes = await fetch(`${API_URL}/clientes?usuario_id=${userId}&usuario=${username}`);
+      const resClientes = await fetch(`${API_URL}/clientes`, { headers });
+      if (resClientes.status === 401) {
+        handleLogout();
+        return;
+      }
       const dataClientes = await resClientes.json();
       setClientes(dataClientes);
 
-      const resPedidos = await fetch(`${API_URL}/pedidos/todos?usuario_id=${userId}`);
+      const resPedidos = await fetch(`${API_URL}/pedidos/todos`, { headers });
+      if (resPedidos.status === 401) {
+        handleLogout();
+        return;
+      }
       const dataPedidos = await resPedidos.json();
       setPedidos(dataPedidos);
     } catch (err) {
@@ -251,6 +262,11 @@ export default function App() {
     } finally {
       setCargandoProductos(false);
     }
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('token');
+    setUsuarioLogueado(null);
   };
 
   const cambiarCantidadTemp = (productoId: number, delta: number) => {
@@ -288,7 +304,6 @@ export default function App() {
       return;
     }
 
-    // Actualizamos de manera local el stock disponible / reservado en la vista para reflejarlo al instante
     setProductos(productos.map(p => {
       if (p.id === productoId) {
         const nuevoReservado = (p.stock_reservado || 0) + cantidadSeleccionada;
@@ -383,28 +398,32 @@ export default function App() {
       return;
     }
 
-    const username = usuarioLogueado?.username || usuarioLogueado?.email?.split('@')[0] || 'admin';
     const payload = { 
       razon_social: razonSocial, 
       cuit, 
       direccion, 
       condicion_fiscal: condicionFiscal, 
       medio_pago: medioPago, 
-      telefono,
-      usuario_dueno: username
+      telefono
+    };
+
+    const token = localStorage.getItem('token');
+    const headers = { 
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}` 
     };
 
     try {
       if (modoCliente === 'editar' && clienteEditandoId) {
         await fetch(`${API_URL}/clientes/${clienteEditandoId}`, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          headers,
           body: JSON.stringify(payload)
         });
       } else {
         await fetch(`${API_URL}/clientes`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers,
           body: JSON.stringify(payload)
         });
       }
@@ -419,7 +438,11 @@ export default function App() {
 
   const eliminarClienteDirecto = async (id: number) => {
     if (!confirm("¿Desea eliminar este cliente?")) return;
-    await fetch(`${API_URL}/clientes/${id}`, { method: 'DELETE' });
+    const token = localStorage.getItem('token');
+    await fetch(`${API_URL}/clientes/${id}`, { 
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
     cargarDatosIniciales();
   };
 
@@ -439,12 +462,9 @@ export default function App() {
       return;
     }
 
-    const username = usuarioLogueado?.username || usuarioLogueado?.email?.split('@')[0] || 'admin';
-
     try {
       const bodyData = clienteSeleccionadoId ? {
         cliente_id: Number(clienteSeleccionadoId),
-        usuario_id: usuarioLogueado?.id,
         observaciones_agente: observaciones,
         items: items
       } : {
@@ -454,17 +474,19 @@ export default function App() {
           direccion, 
           condicion_fiscal: condicionFiscal, 
           medio_pago: medioPago, 
-          telefono,
-          usuario_dueno: username
+          telefono
         },
-        usuario_id: usuarioLogueado?.id,
         observaciones_agente: observaciones,
         items: items
       };
 
+      const token = localStorage.getItem('token');
       const response = await fetch(`${API_URL}/pedidos`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}` 
+        },
         body: JSON.stringify(bodyData)
       });
 
@@ -551,7 +573,7 @@ export default function App() {
           <UserMenuDropdown 
             usuario={usuarioLogueado} 
             onOpenChangePassword={() => setIsChangePasswordOpen(true)} 
-            onLogout={() => setUsuarioLogueado(null)} 
+            onLogout={handleLogout} 
           />
         </div>
 
