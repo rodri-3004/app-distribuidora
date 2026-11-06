@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import sqlite3
@@ -8,6 +8,8 @@ from typing import List, Optional
 import hashlib
 from datetime import datetime
 import re
+import pandas as pd
+import io
 
 # Importaciones para ReportLab (Generación de PDF)
 from reportlab.lib.pagesizes import letter
@@ -17,8 +19,8 @@ from reportlab.lib import colors
 
 app = FastAPI(
     title="API Distribuidora de Limpieza",
-    version="1.13",
-    description="API B2B con Gestión de Clientes, Control de Stock, Categorías y Órdenes en PDF."
+    version="1.35",
+    description="API B2B con Modelo Profesional de Stock Físico, Reservado y Disponible."
 )
 
 app.add_middleware(
@@ -29,32 +31,45 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configuración de archivos estáticos para servir los PDFs generados
 CARPETA_PDFS = Path(__file__).parent.parent / "documentos_pedidos"
 CARPETA_PDFS.mkdir(parents=True, exist_ok=True)
 app.mount("/documentos_pedidos", StaticFiles(directory=str(CARPETA_PDFS)), name="documentos_pedidos")
 
-RUTA_DB = Path(__file__).parent.parent / "base_datos" / "distribuidora.db"
+RUTA_DB = Path(__file__).parent / "distribuidora.db"
+if not RUTA_DB.exists():
+    RUTA_DB = Path(__file__).parent.parent / "base_datos" / "distribuidora.db"
 
 def obtener_conexion():
     if not RUTA_DB.exists():
-        raise HTTPException(status_code=500, detail="La base de datos no existe. Ejecute crear_base_2.py primero.")
+        raise HTTPException(status_code=500, detail="La base de datos no existe.")
     conexion = sqlite3.connect(RUTA_DB)
     conexion.row_factory = sqlite3.Row
     conexion.execute("PRAGMA foreign_keys = ON")
     return conexion
 
-def asegurar_columnas_clientes(cursor):
-    """Verifica y agrega columnas faltantes en la tabla clientes de forma dinámica"""
+def asegurar_esquema(cursor):
+    """Verifica y asegura columnas clave para aislamiento estricto por usuario"""
     cursor.execute("PRAGMA table_info(clientes)")
-    columnas = [col["name"] for col in cursor.fetchall()]
-    
-    if "telefono" not in columnas:
+    col_clientes = [col["name"] for col in cursor.fetchall()]
+    if "telefono" not in col_clientes:
         cursor.execute("ALTER TABLE clientes ADD COLUMN telefono TEXT DEFAULT ''")
-    if "condicion_fiscal" not in columnas:
+    if "condicion_fiscal" not in col_clientes:
         cursor.execute("ALTER TABLE clientes ADD COLUMN condicion_fiscal TEXT DEFAULT 'Responsable Inscripto'")
-    if "medio_pago" not in columnas:
+    if "medio_pago" not in col_clientes:
         cursor.execute("ALTER TABLE clientes ADD COLUMN medio_pago TEXT DEFAULT 'Efectivo contra entrega'")
+    if "usuario_dueno" not in col_clientes:
+        cursor.execute("ALTER TABLE clientes ADD COLUMN usuario_dueno TEXT DEFAULT 'admin'")
+
+    cursor.execute("PRAGMA table_info(pedidos)")
+    col_pedidos = [col["name"] for col in cursor.fetchall()]
+    if "usuario_id" not in col_pedidos:
+        cursor.execute("ALTER TABLE pedidos ADD COLUMN usuario_id INTEGER DEFAULT 1")
+
+    # Asegurar que productos tenga stock_reservado
+    cursor.execute("PRAGMA table_info(productos)")
+    col_productos = [col["name"] for col in cursor.fetchall()]
+    if "stock_reservado" not in col_productos:
+        cursor.execute("ALTER TABLE productos ADD COLUMN stock_reservado INTEGER DEFAULT 0")
 
 def generar_hash(clave: str) -> str:
     return hashlib.sha256(clave.encode('utf-8')).hexdigest()
@@ -64,11 +79,7 @@ def validar_dni_cuil(valor: str) -> bool:
     return 7 <= len(limpio) <= 11
 
 def validar_clave_segura(clave: str) -> bool:
-    if len(clave) < 8:
-        return False
-    if not re.search(r'[A-Za-z]', clave):
-        return False
-    if not re.search(r'\d', clave):
+    if len(clave) < 8 or not re.search(r'[A-Za-z]', clave) or not re.search(r'\d', clave):
         return False
     return True
 
@@ -111,6 +122,7 @@ class ClienteModel(BaseModel):
     condicion_fiscal: Optional[str] = "Responsable Inscripto"
     medio_pago: Optional[str] = "Efectivo contra entrega"
     telefono: Optional[str] = ""
+    usuario_dueno: Optional[str] = "admin"
 
 class DetalleItem(BaseModel):
     producto_id: int
@@ -120,6 +132,7 @@ class PedidoCreate(BaseModel):
     cliente_id: Optional[int] = None
     datos_cliente: Optional[ClienteModel] = None
     observaciones_agente: Optional[str] = None
+    usuario_id: Optional[int] = 1
     items: List[DetalleItem]
 
 
@@ -131,16 +144,13 @@ class PedidoCreate(BaseModel):
 def registrar_usuario(datos: UsuarioRegistro):
     if not validar_dni_cuil(datos.dni_cuil):
         raise HTTPException(status_code=400, detail="El DNI o CUIT/CUIL ingresado no tiene un formato válido.")
-    
     if datos.clave != datos.confirmar_clave:
         raise HTTPException(status_code=400, detail="Las contraseñas no coinciden.")
-    
     if not validar_clave_segura(datos.clave):
         raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 8 caracteres, incluyendo letras y números.")
 
     conexion = obtener_conexion()
     cursor = conexion.cursor()
-    
     try:
         cursor.execute("SELECT id FROM usuarios WHERE email = ? OR dni_cuil = ?", (datos.email, datos.dni_cuil))
         if cursor.fetchone():
@@ -149,15 +159,15 @@ def registrar_usuario(datos: UsuarioRegistro):
         clave_hash = generar_hash(datos.clave)
         token_activacion = hashlib.md5(f"{datos.email}{datetime.now()}".encode('utf-8')).hexdigest()[:8].upper()
         
+        username = datos.email.split("@")[0]
         cursor.execute("""
-            INSERT INTO usuarios (nombre, apellido, email, dni_cuil, clave_hash, rol, verificado, token_verificacion)
-            VALUES (?, ?, ?, ?, ?, 'cliente', 0, ?)
-        """, (datos.nombre, datos.apellido, datos.email, datos.dni_cuil, clave_hash, token_activacion))
-        
+            INSERT INTO usuarios (nombre, apellido, email, dni_cuil, clave_hash, rol, verificado, token_verificacion, usuario)
+            VALUES (?, ?, ?, ?, ?, 'cliente', 0, ?, ?)
+        """, (datos.nombre, datos.apellido, datos.email, datos.dni_cuil, clave_hash, token_activacion, username))
         conexion.commit()
         
         return {
-            "mensaje": "¡Registro exitoso! Se ha enviado un correo de activación a su casilla.",
+            "mensaje": "¡Registro exitoso! Ya puede iniciar sesión.",
             "email": datos.email,
             "token_debug": token_activacion
         }
@@ -170,17 +180,17 @@ def registrar_usuario(datos: UsuarioRegistro):
     finally:
         conexion.close()
 
-@app.post("/activar", summary="Activar cuenta mediante token enviado por mail")
+@app.post("/activar", summary="Activar cuenta mediante token simulado (Flexible)")
 def activar_cuenta(email: EmailStr, token: str):
     conexion = obtener_conexion()
     cursor = conexion.cursor()
     
-    cursor.execute("SELECT id, verificado FROM usuarios WHERE email = ? AND token_verificacion = ?", (email, token))
+    cursor.execute("SELECT id, verificado FROM usuarios WHERE email = ?", (email,))
     usuario_row = cursor.fetchone()
     
     if not usuario_row:
         conexion.close()
-        raise HTTPException(status_code=400, detail="Token de activación inválido o correo incorrecto.")
+        raise HTTPException(status_code=400, detail="Correo electrónico no encontrado en el sistema.")
     
     usuario = dict(usuario_row)
     if usuario["verificado"] == 1:
@@ -191,20 +201,18 @@ def activar_cuenta(email: EmailStr, token: str):
     conexion.commit()
     conexion.close()
     
-    return {"mensaje": "Cuenta activada con éxito. Ya puede iniciar sesión."}
+    return {"mensaje": "¡Cuenta activada con éxito! Ya puede iniciar sesión."}
 
-@app.post("/login", summary="Iniciar sesión validando verificación")
+@app.post("/login", summary="Iniciar sesión validando credenciales y retornando identidad de sesión")
 def login_usuario(datos: UsuarioLogin):
     conexion = obtener_conexion()
     cursor = conexion.cursor()
-    
     clave_hash = generar_hash(datos.clave)
     
     cursor.execute("""
-        SELECT id, nombre, apellido, email, rol, verificado FROM usuarios 
+        SELECT id, nombre, apellido, email, rol, verificado, usuario FROM usuarios 
         WHERE email = ? AND clave_hash = ?
     """, (datos.email, clave_hash))
-    
     usuario_row = cursor.fetchone()
     conexion.close()
     
@@ -213,7 +221,9 @@ def login_usuario(datos: UsuarioLogin):
     
     usuario = dict(usuario_row)
     if usuario["verificado"] == 0:
-        raise HTTPException(status_code=403, detail="Cuenta no activada. Por favor revise su correo electrónico para verificarla.")
+        raise HTTPException(status_code=403, detail="Cuenta no activada.")
+    
+    username_asignado = usuario.get("usuario") or usuario["email"].split("@")[0]
     
     return {
         "mensaje": "Login exitoso",
@@ -222,7 +232,8 @@ def login_usuario(datos: UsuarioLogin):
             "nombre": usuario["nombre"],
             "apellido": usuario["apellido"],
             "email": usuario["email"],
-            "rol": usuario["rol"]
+            "rol": usuario["rol"],
+            "username": username_asignado
         }
     }
 
@@ -230,7 +241,6 @@ def login_usuario(datos: UsuarioLogin):
 def recuperar_password(datos: RecuperarPasswordModel):
     conexion = obtener_conexion()
     cursor = conexion.cursor()
-    
     cursor.execute("SELECT id FROM usuarios WHERE email = ?", (datos.email,))
     usuario = cursor.fetchone()
     
@@ -239,27 +249,21 @@ def recuperar_password(datos: RecuperarPasswordModel):
         raise HTTPException(status_code=404, detail="El correo electrónico no se encuentra registrado.")
     
     token_recuperacion = hashlib.md5(f"{datos.email}{datetime.now()}".encode('utf-8')).hexdigest()[:6].upper()
-    
     cursor.execute("UPDATE usuarios SET token_verificacion = ? WHERE email = ?", (token_recuperacion, datos.email))
     conexion.commit()
     conexion.close()
     
-    return {
-        "mensaje": "Se ha enviado un correo con las instrucciones para restablecer su contraseña.",
-        "token_debug": token_recuperacion
-    }
+    return {"mensaje": "Correo de recuperación enviado.", "token_debug": token_recuperacion}
 
-@app.post("/resetear-password", summary="Restablecer nueva contraseña (doble verificación)")
+@app.post("/resetear-password", summary="Restablecer nueva contraseña")
 def resetear_password(datos: ResetPasswordModel):
     if datos.nueva_clave != datos.confirmar_nueva_clave:
         raise HTTPException(status_code=400, detail="Las nuevas contraseñas no coinciden.")
-    
     if not validar_clave_segura(datos.nueva_clave):
-        raise HTTPException(status_code=400, detail="La nueva contraseña debe tener al menos 8 caracteres, letras y números.")
+        raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 8 caracteres, letras y números.")
 
     conexion = obtener_conexion()
     cursor = conexion.cursor()
-    
     cursor.execute("SELECT id FROM usuarios WHERE email = ? AND token_verificacion = ?", (datos.email, datos.token))
     usuario = cursor.fetchone()
     
@@ -268,24 +272,20 @@ def resetear_password(datos: ResetPasswordModel):
         raise HTTPException(status_code=400, detail="Código de recuperación inválido o expirado.")
     
     nuevo_hash = generar_hash(datos.nueva_clave)
-    
     cursor.execute("UPDATE usuarios SET clave_hash = ?, token_verificacion = NULL WHERE email = ?", (nuevo_hash, datos.email))
     conexion.commit()
     conexion.close()
-    
-    return {"mensaje": "Contraseña actualizada con éxito. Ya puede iniciar sesión con su nueva clave."}
+    return {"mensaje": "Contraseña actualizada con éxito."}
 
 @app.post("/cambiar-password", summary="Cambiar contraseña de usuario autenticado")
 def cambiar_password(datos: CambiarPasswordModel):
     if datos.nueva_clave != datos.confirmar_nueva_clave:
         raise HTTPException(status_code=400, detail="Las nuevas contraseñas no coinciden.")
-    
     if not validar_clave_segura(datos.nueva_clave):
-        raise HTTPException(status_code=400, detail="La nueva contraseña debe tener al menos 8 caracteres, letras y números.")
+        raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 8 caracteres, letras y números.")
 
     conexion = obtener_conexion()
     cursor = conexion.cursor()
-    
     hash_actual = generar_hash(datos.clave_actual)
     cursor.execute("SELECT id FROM usuarios WHERE id = ? AND clave_hash = ?", (datos.usuario_id, hash_actual))
     usuario = cursor.fetchone()
@@ -298,24 +298,25 @@ def cambiar_password(datos: CambiarPasswordModel):
     cursor.execute("UPDATE usuarios SET clave_hash = ? WHERE id = ?", (nuevo_hash, datos.usuario_id))
     conexion.commit()
     conexion.close()
-    
     return {"mensaje": "Contraseña actualizada con éxito."}
 
 
 # ==========================================
-# MÓDULO DE PRODUCTOS, CATEGORÍAS, CLIENTES Y PEDIDOS
+# PRODUCTOS, CATEGORÍAS & IMPORTACIÓN (PROTEGIENDO STOCK)
 # ==========================================
 
-@app.get("/productos", summary="Listar todos los productos activos con sus categorías")
+@app.get("/productos", summary="Listar catálogo global de productos activos con stock disponible real")
 def listar_productos():
     conexion = obtener_conexion()
     cursor = conexion.cursor()
-    cursor.execute("SELECT * FROM productos WHERE activo = 1")
+    asegurar_esquema(cursor)
+    conexion.commit()
+    cursor.execute("SELECT *, (stock_fisico - stock_reservado) as stock_disponible FROM productos WHERE activo = 1")
     productos = [dict(fila) for fila in cursor.fetchall()]
     conexion.close()
     return productos
 
-@app.get("/categorias", summary="Listar todas las categorías disponibles en el catálogo")
+@app.get("/categorias", summary="Listar categorías del catálogo global")
 def listar_categorias():
     conexion = obtener_conexion()
     cursor = conexion.cursor()
@@ -324,15 +325,69 @@ def listar_categorias():
     conexion.close()
     return categorias
 
-@app.get("/clientes", summary="Listar clientes registrados")
-def listar_clientes():
+@app.post("/productos/importar-excel", summary="Actualizar precios masivamente protegiendo el stock físico y reservado")
+async def importar_productos_excel(file: UploadFile = File(...)):
+    contents = await file.read()
+    try:
+        if file.filename.endswith('.csv'):
+            df = pd.read_csv(io.BytesIO(contents))
+        else:
+            df = pd.read_excel(io.BytesIO(contents))
+        
+        df.columns = [c.strip().lower() for c in df.columns]
+        
+        conexion = obtener_conexion()
+        cursor = conexion.cursor()
+        asegurar_esquema(cursor)
+        
+        actualizados = 0
+        for _, row in df.iterrows():
+            codigo = str(row.get('codigo') or row.get('sku') or '').strip()
+            precio = row.get('precio')
+            
+            if codigo and pd.notna(precio):
+                # Solo actualizamos el precio, protegiendo el stock físico y reservado actual del depósito
+                cursor.execute("UPDATE productos SET precio = ? WHERE codigo = ?", (float(precio), codigo))
+                actualizados += 1
+                
+        conexion.commit()
+        conexion.close()
+        return {"mensaje": f"Se actualizaron los precios de {actualizados} productos correctamente sin alterar el stock del depósito."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al procesar la planilla: {str(e)}")
+
+
+# ==========================================
+# CLIENTES (AISLAMIENTO ESTRICTO POR SESIÓN)
+# ==========================================
+
+@app.get("/clientes", summary="Listar clientes exclusivos de la sesión del usuario")
+def listar_clientes(
+    usuario: Optional[str] = Query(None, description="Nombre de usuario o preventista logueado"),
+    usuario_id: Optional[int] = Query(None, description="ID numérico de la sesión")
+):
     conexion = obtener_conexion()
     cursor = conexion.cursor()
     try:
-        asegurar_columnas_clientes(cursor)
+        asegurar_esquema(cursor)
         conexion.commit()
 
-        cursor.execute("SELECT id, razon_social, cuit, direccion_entrega, telefono, condicion_fiscal, medio_pago, limite_credito, saldo_actual, estado FROM clientes ORDER BY id DESC")
+        if usuario:
+            cursor.execute("""
+                SELECT * FROM clientes 
+                WHERE usuario_dueno = ? 
+                ORDER BY id DESC
+            """, (usuario,))
+        elif usuario_id:
+            cursor.execute("""
+                SELECT c.* FROM clientes c
+                JOIN usuarios u ON (c.usuario_dueno = u.usuario OR c.usuario_dueno = u.email)
+                WHERE u.id = ?
+                ORDER BY c.id DESC
+            """, (usuario_id,))
+        else:
+            cursor.execute("SELECT * FROM clientes ORDER BY id DESC")
+            
         filas = cursor.fetchall()
         clientes = []
         for f in filas:
@@ -348,40 +403,72 @@ def listar_clientes():
         conexion.close()
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/clientes", summary="Crear nuevo cliente")
+@app.post("/clientes", summary="Crear nuevo cliente vinculado a la sesión activa")
 def crear_cliente(c: ClienteModel):
     conexion = obtener_conexion()
     cursor = conexion.cursor()
     try:
-        asegurar_columnas_clientes(cursor)
-        
+        asegurar_esquema(cursor)
         cursor.execute("""
-            INSERT INTO clientes (razon_social, cuit, direccion_entrega, telefono, condicion_fiscal, medio_pago, limite_credito, saldo_actual, estado)
-            VALUES (?, ?, ?, ?, ?, ?, 0.0, 0.0, 'ACTIVO')
-        """, (c.razon_social, c.cuit, c.direccion, c.telefono, c.condicion_fiscal, c.medio_pago))
-        
+            INSERT INTO clientes (razon_social, cuit, direccion_entrega, telefono, condicion_fiscal, medio_pago, limite_credito, saldo_actual, estado, usuario_dueno)
+            VALUES (?, ?, ?, ?, ?, ?, 0.0, 0.0, 'ACTIVO', ?)
+        """, (c.razon_social, c.cuit, c.direccion, c.telefono, c.condicion_fiscal, c.medio_pago, c.usuario_dueno))
         conexion.commit()
-        cliente_id = cursor.lastrowid
-        return {"mensaje": "Cliente creado con éxito", "id": cliente_id}
+        return {"mensaje": "Cliente creado con éxito en su cartera", "id": cursor.lastrowid}
     except Exception as e:
         conexion.rollback()
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         conexion.close()
 
+@app.post("/clientes/importar-excel", summary="Importar clientes masivamente mediante Excel/CSV")
+async def importar_clientes_excel(file: UploadFile = File(...), usuario_dueno: str = Form("admin")):
+    contents = await file.read()
+    try:
+        if file.filename.endswith('.csv'):
+            df = pd.read_csv(io.BytesIO(contents))
+        else:
+            df = pd.read_excel(io.BytesIO(contents))
+        
+        df.columns = [c.strip().lower() for c in df.columns]
+        conexion = obtener_conexion()
+        cursor = conexion.cursor()
+        asegurar_esquema(cursor)
+        
+        importados = 0
+        for _, row in df.iterrows():
+            razon_social = str(row.get('razon_social') or row.get('nombre') or '').strip()
+            cuit = str(row.get('cuit') or row.get('dni') or '').strip()
+            direccion = str(row.get('direccion') or row.get('direccion_entrega') or '').strip()
+            telefono = str(row.get('telefono') or '').strip()
+            condicion = str(row.get('condicion_fiscal') or 'Responsable Inscripto').strip()
+            pago = str(row.get('medio_pago') or 'Efectivo contra entrega').strip()
+            dueno = str(row.get('usuario_dueno') or usuario_dueno).strip()
+            
+            if razon_social and cuit:
+                cursor.execute("""
+                    INSERT INTO clientes (razon_social, cuit, direccion_entrega, telefono, condicion_fiscal, medio_pago, limite_credito, saldo_actual, estado, usuario_dueno)
+                    VALUES (?, ?, ?, ?, ?, ?, 0.0, 0.0, 'ACTIVO', ?)
+                """, (razon_social, cuit, direccion, telefono, condicion, pago, dueno))
+                importados += 1
+                
+        conexion.commit()
+        conexion.close()
+        return {"mensaje": f"Se importaron {importados} clientes correctamente."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al importar clientes: {str(e)}")
+
 @app.put("/clientes/{cliente_id}", summary="Actualizar datos de cliente")
 def actualizar_cliente(cliente_id: int, c: ClienteModel):
     conexion = obtener_conexion()
     cursor = conexion.cursor()
     try:
-        asegurar_columnas_clientes(cursor)
-        
+        asegurar_esquema(cursor)
         cursor.execute("""
             UPDATE clientes 
-            SET razon_social = ?, cuit = ?, direccion_entrega = ?, telefono = ?, condicion_fiscal = ?, medio_pago = ?
+            SET razon_social = ?, cuit = ?, direccion_entrega = ?, telefono = ?, condicion_fiscal = ?, medio_pago = ?, usuario_dueno = ?
             WHERE id = ?
-        """, (c.razon_social, c.cuit, c.direccion, c.telefono, c.condicion_fiscal, c.medio_pago, cliente_id))
-        
+        """, (c.razon_social, c.cuit, c.direccion, c.telefono, c.condicion_fiscal, c.medio_pago, c.usuario_dueno, cliente_id))
         conexion.commit()
         return {"mensaje": "Cliente actualizado con éxito"}
     except Exception as e:
@@ -404,12 +491,17 @@ def eliminar_cliente(cliente_id: int):
     finally:
         conexion.close()
 
-@app.post("/pedidos", summary="Crear pedido y generar PDF de la orden")
+
+# ==========================================
+# PEDIDOS (MODELO PROFESIONAL DE RESERVA)
+# ==========================================
+
+@app.post("/pedidos", summary="Crear pedido incrementando stock reservado (Disponible baja de inmediato)")
 def crear_pedido(pedido: PedidoCreate):
     conexion = obtener_conexion()
     cursor = conexion.cursor()
     try:
-        asegurar_columnas_clientes(cursor)
+        asegurar_esquema(cursor)
 
         if pedido.cliente_id:
             cursor.execute("SELECT * FROM clientes WHERE id = ?", (pedido.cliente_id,))
@@ -422,14 +514,13 @@ def crear_pedido(pedido: PedidoCreate):
         elif pedido.datos_cliente:
             c = pedido.datos_cliente
             cursor.execute("""
-                INSERT INTO clientes (razon_social, cuit, direccion_entrega, telefono, condicion_fiscal, medio_pago, limite_credito, saldo_actual, estado)
-                VALUES (?, ?, ?, ?, ?, ?, 0.0, 0.0, 'ACTIVO')
-            """, (c.razon_social, c.cuit, c.direccion, c.telefono, c.condicion_fiscal, c.medio_pago))
+                INSERT INTO clientes (razon_social, cuit, direccion_entrega, telefono, condicion_fiscal, medio_pago, limite_credito, saldo_actual, estado, usuario_dueno)
+                VALUES (?, ?, ?, ?, ?, ?, 0.0, 0.0, 'ACTIVO', ?)
+            """, (c.razon_social, c.cuit, c.direccion, c.telefono, c.condicion_fiscal, c.medio_pago, c.usuario_dueno))
                 
             cliente_id = cursor.lastrowid
             cursor.execute("SELECT * FROM clientes WHERE id = ?", (cliente_id,))
-            cliente_row = cursor.fetchone()
-            cliente = dict(cliente_row)
+            cliente = dict(cursor.fetchone())
             cliente["direccion"] = cliente.get("direccion_entrega", "")
         else:
             raise HTTPException(status_code=400, detail="Debe seleccionar un cliente o completar sus datos.")
@@ -445,8 +536,9 @@ def crear_pedido(pedido: PedidoCreate):
                 raise HTTPException(status_code=404, detail=f"Producto ID {item.producto_id} no encontrado.")
             
             prod = dict(prod_row)
-            if prod["stock_fisico"] < item.cantidad:
-                raise HTTPException(status_code=400, detail=f"Stock insuficiente para '{prod['nombre']}'.")
+            disponible = prod["stock_fisico"] - prod["stock_reservado"]
+            if disponible < item.cantidad:
+                raise HTTPException(status_code=400, detail=f"Stock insuficiente para '{prod['nombre']}' (Disponible real: {disponible}).")
             
             subtotal = prod["precio"] * item.cantidad
             total_pedido += subtotal
@@ -464,10 +556,11 @@ def crear_pedido(pedido: PedidoCreate):
             ])
 
         fecha_actual = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
         cursor.execute("""
-            INSERT INTO pedidos (cliente_id, fecha, estado, total, observaciones_agente)
-            VALUES (?, ?, 'RECIBIDO', ?, ?)
-        """, (cliente_id, fecha_actual, total_pedido, pedido.observaciones_agente))
+            INSERT INTO pedidos (cliente_id, fecha, estado, total, observaciones_agente, usuario_id)
+            VALUES (?, ?, 'RECIBIDO', ?, ?, ?)
+        """, (cliente_id, fecha_actual, total_pedido, pedido.observaciones_agente, pedido.usuario_id))
         pedido_id = cursor.lastrowid
 
         for det in detalles_a_procesar:
@@ -475,17 +568,24 @@ def crear_pedido(pedido: PedidoCreate):
                 INSERT INTO detalle_pedidos (pedido_id, producto_id, cantidad, precio_unitario)
                 VALUES (?, ?, ?, ?)
             """, (pedido_id, det["producto_id"], det["cantidad"], det["precio_unitario"]))
-            cursor.execute("UPDATE productos SET stock_fisico = stock_fisico - ? WHERE id = ?", (det["cantidad"], det["producto_id"]))
+            
+            # Incrementar stock reservado en el depósito (Físico intacto hasta preparar)
+            # Reserva atómica: solo se aplica si todavía hay stock disponible
+            cursor.execute("""
+                UPDATE productos
+                SET stock_reservado = stock_reservado + ?
+                WHERE id = ? AND (stock_fisico - stock_reservado) >= ?
+            """, (det["cantidad"], det["producto_id"], det["cantidad"]))
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=400, detail="El stock se agotó mientras se procesaba el pedido. Intente de nuevo.")
 
         nuevo_saldo = cliente.get("saldo_actual", 0.0) + total_pedido
         cursor.execute("UPDATE clientes SET saldo_actual = ? WHERE id = ?", (nuevo_saldo, cliente_id))
         conexion.commit()
 
-        # Generación del PDF con ReportLab (Diseño UI/UX Moderno)
-        carpeta_docs = Path(__file__).parent.parent / "documentos_pedidos"
-        carpeta_docs.mkdir(parents=True, exist_ok=True)
+        # Generación del PDF oficial con ReportLab
         nombre_archivo_pdf = f"orden_pedido_{pedido_id}.pdf"
-        ruta_pdf = carpeta_docs / nombre_archivo_pdf
+        ruta_pdf = CARPETA_PDFS / nombre_archivo_pdf
 
         doc = SimpleDocTemplate(str(ruta_pdf), pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
         elementos = []
@@ -567,27 +667,117 @@ def crear_pedido(pedido: PedidoCreate):
         doc.build(elementos)
 
         return {
-            "mensaje": f"¡Pedido #{pedido_id} creado con éxito y PDF generado!",
+            "mensaje": f"¡Pedido #{pedido_id} creado con éxito y reservado en depósito!",
             "pedido_id": pedido_id,
             "total_pedido": total_pedido,
             "pdf_generado": nombre_archivo_pdf
         }
+    except HTTPException as he:
+        conexion.rollback()
+        raise he
     except Exception as e:
         conexion.rollback()
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         conexion.close()
 
-@app.get("/pedidos/todos", summary="Listar todos los pedidos registrados")
-def listar_todos_pedidos():
+@app.post("/pedidos/{pedido_id}/preparar", summary="Preparar pedido: descuenta el físico del depósito y consume la reserva")
+def preparar_pedido(pedido_id: int):
     conexion = obtener_conexion()
     cursor = conexion.cursor()
-    cursor.execute("""
-        SELECT p.id, p.fecha, p.estado, p.total, p.observaciones_agente, c.razon_social 
-        FROM pedidos p 
-        LEFT JOIN clientes c ON p.cliente_id = c.id 
-        ORDER BY p.fecha DESC
-    """)
+    try:
+        cursor.execute("SELECT * FROM pedidos WHERE id = ?", (pedido_id,))
+        pedido = cursor.fetchone()
+        if not pedido:
+            raise HTTPException(status_code=404, detail="Pedido no encontrado.")
+        # Cuando exista el agente Validador, dejar solo VALIDADO
+        if pedido["estado"] not in ("RECIBIDO", "VALIDADO"):
+            raise HTTPException(status_code=400, detail=f"Solo se puede preparar un pedido RECIBIDO o VALIDADO (estado actual: {pedido['estado']}).")
+
+        cursor.execute("SELECT producto_id, cantidad FROM detalle_pedidos WHERE pedido_id = ?", (pedido_id,))
+        for det in cursor.fetchall():
+            cursor.execute("""
+                UPDATE productos
+                SET stock_fisico = stock_fisico - ?, stock_reservado = stock_reservado - ?
+                WHERE id = ? AND stock_reservado >= ? AND stock_fisico >= ?
+            """, (det["cantidad"], det["cantidad"], det["producto_id"], det["cantidad"], det["cantidad"]))
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=409, detail="Inconsistencia de stock: la reserva no alcanza para preparar este pedido.")
+
+        cursor.execute("UPDATE pedidos SET estado = 'PREPARADO' WHERE id = ?", (pedido_id,))
+        conexion.commit()
+        return {"mensaje": f"Pedido #{pedido_id} preparado. Stock físico descontado correctamente."}
+    except HTTPException:
+        conexion.rollback()
+        raise
+    except Exception as e:
+        conexion.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conexion.close()
+
+@app.post("/pedidos/{pedido_id}/cancelar", summary="Cancelar pedido (RECIBIDO o VALIDADO): libera la reserva")
+def cancelar_pedido(pedido_id: int):
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    try:
+        cursor.execute("SELECT * FROM pedidos WHERE id = ?", (pedido_id,))
+        pedido = cursor.fetchone()
+        if not pedido:
+            raise HTTPException(status_code=404, detail="Pedido no encontrado.")
+        if pedido["estado"] == "CANCELADO":
+            raise HTTPException(status_code=400, detail="El pedido ya estaba cancelado.")
+        # Después de preparado, la reserva ya se consumió y el físico salió del depósito:
+        # cancelar requeriría devolver mercadería, un proceso que todavía no existe.
+        if pedido["estado"] not in ("RECIBIDO", "VALIDADO"):
+            raise HTTPException(status_code=400, detail=f"Solo se puede cancelar un pedido RECIBIDO o VALIDADO (estado actual: {pedido['estado']}).")
+
+        cursor.execute("SELECT producto_id, cantidad FROM detalle_pedidos WHERE pedido_id = ?", (pedido_id,))
+        for det in cursor.fetchall():
+            cursor.execute("""
+                UPDATE productos
+                SET stock_reservado = stock_reservado - ?
+                WHERE id = ? AND stock_reservado >= ?
+            """, (det["cantidad"], det["producto_id"], det["cantidad"]))
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=409, detail="Inconsistencia de stock: no hay reserva suficiente para liberar.")
+
+        cursor.execute("UPDATE clientes SET saldo_actual = saldo_actual - ? WHERE id = ?", (pedido["total"], pedido["cliente_id"]))
+        cursor.execute("UPDATE pedidos SET estado = 'CANCELADO' WHERE id = ?", (pedido_id,))
+        conexion.commit()
+        return {"mensaje": f"Pedido #{pedido_id} cancelado. Reserva liberada correctamente."}
+    except HTTPException:
+        conexion.rollback()
+        raise
+    except Exception as e:
+        conexion.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conexion.close()
+
+@app.get("/pedidos/todos", summary="Listar únicamente el historial de pedidos de la sesión activa")
+def listar_todos_pedidos(usuario_id: Optional[int] = Query(None, description="ID del usuario logueado en la sesión")):
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    asegurar_esquema(cursor)
+    conexion.commit()
+
+    if usuario_id:
+        cursor.execute("""
+            SELECT p.id, p.fecha, p.estado, p.total, p.observaciones_agente, c.razon_social, p.usuario_id
+            FROM pedidos p 
+            LEFT JOIN clientes c ON p.cliente_id = c.id 
+            WHERE p.usuario_id = ?
+            ORDER BY p.fecha DESC
+        """, (usuario_id,))
+    else:
+        cursor.execute("""
+            SELECT p.id, p.fecha, p.estado, p.total, p.observaciones_agente, c.razon_social, p.usuario_id
+            FROM pedidos p 
+            LEFT JOIN clientes c ON p.cliente_id = c.id 
+            ORDER BY p.fecha DESC
+        """)
+        
     pedidos = [dict(fila) for fila in cursor.fetchall()]
     conexion.close()
     return pedidos

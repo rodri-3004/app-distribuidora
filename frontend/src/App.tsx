@@ -235,11 +235,15 @@ export default function App() {
       const prods = await obtenerProductos();
       setProductos(prods);
 
-      const resClientes = await fetch(`${API_URL}/clientes`);
+      const userId = usuarioLogueado?.id;
+      const username = usuarioLogueado?.username || usuarioLogueado?.email?.split('@')[0];
+
+      // Peticiones filtradas por el usuario actual
+      const resClientes = await fetch(`${API_URL}/clientes?usuario_id=${userId}&usuario=${username}`);
       const dataClientes = await resClientes.json();
       setClientes(dataClientes);
 
-      const resPedidos = await fetch(`${API_URL}/pedidos/todos`);
+      const resPedidos = await fetch(`${API_URL}/pedidos/todos?usuario_id=${userId}`);
       const dataPedidos = await resPedidos.json();
       setPedidos(dataPedidos);
     } catch (err) {
@@ -256,9 +260,11 @@ export default function App() {
     const actual = cantidadesTemp[productoId] || 0;
     const nueva = actual + delta;
 
+    const stockDisponibles = (prod.stock_disponible !== undefined) ? prod.stock_disponible : (prod.stock_fisico - (prod.stock_reservado || 0));
+
     if (nueva < 0) return;
-    if (nueva > prod.stock_fisico) {
-      alert("No hay suficiente stock físico disponible.");
+    if (nueva > stockDisponibles) {
+      alert("No hay suficiente stock disponible en depósito.");
       return;
     }
 
@@ -273,14 +279,24 @@ export default function App() {
     }
 
     const prod = productos.find(p => p.id === productoId);
-    if (!prod || prod.stock_fisico < cantidadSeleccionada) {
-      alert("Stock insuficiente.");
+    if (!prod) return;
+
+    const stockDisponibles = (prod.stock_disponible !== undefined) ? prod.stock_disponible : (prod.stock_fisico - (prod.stock_reservado || 0));
+
+    if (stockDisponibles < cantidadSeleccionada) {
+      alert("Stock disponible insuficiente.");
       return;
     }
 
+    // Actualizamos de manera local el stock disponible / reservado en la vista para reflejarlo al instante
     setProductos(productos.map(p => {
       if (p.id === productoId) {
-        return { ...p, stock_fisico: p.stock_fisico - cantidadSeleccionada };
+        const nuevoReservado = (p.stock_reservado || 0) + cantidadSeleccionada;
+        return { 
+          ...p, 
+          stock_reservado: nuevoReservado,
+          stock_disponible: p.stock_fisico - nuevoReservado
+        };
       }
       return p;
     }));
@@ -298,14 +314,21 @@ export default function App() {
     const cantActualEnCarrito = carrito[productoId] || 0;
     const diferencia = nuevaCant - cantActualEnCarrito;
 
-    if (diferencia > 0 && prodOriginal.stock_fisico < diferencia) {
-      alert("Stock insuficiente en depósito.");
+    const stockDisponibles = (prodOriginal.stock_disponible !== undefined) ? prodOriginal.stock_disponible : (prodOriginal.stock_fisico - (prodOriginal.stock_reservado || 0));
+
+    if (diferencia > 0 && stockDisponibles < diferencia) {
+      alert("Stock disponible insuficiente en depósito.");
       return;
     }
 
     setProductos(productos.map(p => {
       if (p.id === productoId) {
-        return { ...p, stock_fisico: p.stock_fisico - diferencia };
+        const nuevoReservado = (p.stock_reservado || 0) + diferencia;
+        return { 
+          ...p, 
+          stock_reservado: nuevoReservado,
+          stock_disponible: p.stock_fisico - nuevoReservado
+        };
       }
       return p;
     }));
@@ -321,7 +344,12 @@ export default function App() {
     const cantEnCarrito = carrito[productoId] || 0;
     setProductos(productos.map(p => {
       if (p.id === productoId) {
-        return { ...p, stock_fisico: p.stock_fisico + cantEnCarrito };
+        const nuevoReservado = Math.max(0, (p.stock_reservado || 0) - cantEnCarrito);
+        return { 
+          ...p, 
+          stock_reservado: nuevoReservado,
+          stock_disponible: p.stock_fisico - nuevoReservado
+        };
       }
       return p;
     }));
@@ -355,7 +383,16 @@ export default function App() {
       return;
     }
 
-    const payload = { razon_social: razonSocial, cuit, direccion, condicion_fiscal: condicionFiscal, medio_pago: medioPago, telefono };
+    const username = usuarioLogueado?.username || usuarioLogueado?.email?.split('@')[0] || 'admin';
+    const payload = { 
+      razon_social: razonSocial, 
+      cuit, 
+      direccion, 
+      condicion_fiscal: condicionFiscal, 
+      medio_pago: medioPago, 
+      telefono,
+      usuario_dueno: username
+    };
 
     try {
       if (modoCliente === 'editar' && clienteEditandoId) {
@@ -402,13 +439,25 @@ export default function App() {
       return;
     }
 
+    const username = usuarioLogueado?.username || usuarioLogueado?.email?.split('@')[0] || 'admin';
+
     try {
       const bodyData = clienteSeleccionadoId ? {
         cliente_id: Number(clienteSeleccionadoId),
+        usuario_id: usuarioLogueado?.id,
         observaciones_agente: observaciones,
         items: items
       } : {
-        datos_cliente: { razon_social: razonSocial, cuit, direccion, condicion_fiscal: condicionFiscal, medio_pago: medioPago, telefono },
+        datos_cliente: { 
+          razon_social: razonSocial, 
+          cuit, 
+          direccion, 
+          condicion_fiscal: condicionFiscal, 
+          medio_pago: medioPago, 
+          telefono,
+          usuario_dueno: username
+        },
+        usuario_id: usuarioLogueado?.id,
         observaciones_agente: observaciones,
         items: items
       };
@@ -422,10 +471,10 @@ export default function App() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Error al procesar pedido.");
 
-      setMensajePedido(`¡Orden #${data.pedido_id} generada con éxito!`);
+      setMensajePedido(`¡Orden #${data.pedido_id} generada con éxito y reservada en depósito!`);
       setTimeout(() => {
         setMensajePedido('');
-      }, 2000);
+      }, 2500);
 
       setCarrito({});
       setCantidadesTemp({});
@@ -577,12 +626,13 @@ export default function App() {
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '20px' }}>
                 {productosFiltrados.map(prod => {
                   const cantTemp = cantidadesTemp[prod.id] || 0;
+                  const stockDisponibleReal = (prod.stock_disponible !== undefined) ? prod.stock_disponible : (prod.stock_fisico - (prod.stock_reservado || 0));
                   return (
                     <div key={prod.id} style={{ background: '#fff', borderRadius: '20px', overflow: 'hidden', border: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', padding: '20px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.03)', transition: 'transform 0.2s, box-shadow 0.2s' }}>
                       <div>
                         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
                           <span style={{ background: '#eff6ff', color: '#1e3a8a', border: '1px solid #dbeafe', padding: '3px 9px', borderRadius: '8px', fontSize: '11px', fontWeight: 'bold' }}>{prod.codigo}</span>
-                          <span style={{ background: prod.stock_fisico > 0 ? '#f0fdf4' : '#fef2f2', color: prod.stock_fisico > 0 ? '#16a34a' : '#dc2626', border: `1px solid ${prod.stock_fisico > 0 ? '#bbf7d0' : '#fecaca'}`, padding: '3px 9px', borderRadius: '8px', fontSize: '11px', fontWeight: 'bold' }}>Stock: {prod.stock_fisico}</span>
+                          <span style={{ background: stockDisponibleReal > 0 ? '#f0fdf4' : '#fef2f2', color: stockDisponibleReal > 0 ? '#16a34a' : '#dc2626', border: `1px solid ${stockDisponibleReal > 0 ? '#bbf7d0' : '#fecaca'}`, padding: '3px 9px', borderRadius: '8px', fontSize: '11px', fontWeight: 'bold' }}>Disponible: {stockDisponibleReal}</span>
                         </div>
                         <h4 style={{ margin: '8px 0 10px 0', fontSize: '15px', color: '#0f172a', fontWeight: '700', lineHeight: '1.4' }}>{prod.nombre}</h4>
                         <p style={{ fontSize: '20px', fontWeight: '800', color: '#1e3a8a', margin: '0 0 10px 0' }}>${prod.precio.toLocaleString('es-AR')}</p>
