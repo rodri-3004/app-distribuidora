@@ -12,7 +12,7 @@ import os
 import secrets
 import bcrypt
 import jwt
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
 import re
 import pandas as pd
 import io
@@ -25,8 +25,8 @@ from reportlab.lib import colors
 
 app = FastAPI(
     title="API Distribuidora de Limpieza",
-    version="1.43",
-    description="API B2B con Modelo Profesional, Seguridad JWT, Trazabilidad y Logística Completa."
+    version="1.47",
+    description="API B2B con Modelo Profesional, Seguridad JWT, Trazabilidad, Logística, Fechas de Entrega y Excepciones."
 )
 
 # Configuración de CORS para permitir el frontend
@@ -78,6 +78,8 @@ def asegurar_esquema(cursor):
         cursor.execute("ALTER TABLE pedidos ADD COLUMN usuario_id INTEGER DEFAULT 1")
     if "estado_anterior" not in col_pedidos:
         cursor.execute("ALTER TABLE pedidos ADD COLUMN estado_anterior TEXT")
+    if "fecha_entrega" not in col_pedidos:
+        cursor.execute("ALTER TABLE pedidos ADD COLUMN fecha_entrega TEXT")
 
     # Verificar columnas de productos
     cursor.execute("PRAGMA table_info(productos)")
@@ -86,6 +88,8 @@ def asegurar_esquema(cursor):
         cursor.execute("ALTER TABLE productos ADD COLUMN stock_reservado INTEGER DEFAULT 0")
     if "imagen_url" not in col_productos:
         cursor.execute("ALTER TABLE productos ADD COLUMN imagen_url TEXT DEFAULT 'default.png'")
+    if "stock_minimo" not in col_productos:
+        cursor.execute("ALTER TABLE productos ADD COLUMN stock_minimo INTEGER DEFAULT 50")
 
 def generar_hash(clave: str) -> str:
     return hashlib.sha256(clave.encode('utf-8')).hexdigest()
@@ -210,6 +214,7 @@ class PedidoCreate(BaseModel):
     datos_cliente: Optional[ClienteModel] = None
     observaciones_agente: Optional[str] = None
     usuario_id: Optional[int] = 1
+    fecha_entrega: Optional[str] = None
     items: List[DetalleItem]
 
 class CambioEstadoModel(BaseModel):
@@ -232,17 +237,30 @@ class EntregaModel(BaseModel):
     incidencia: Optional[str] = None
     comprobante: Optional[str] = None
 
+class ExcepcionModel(BaseModel):
+    pedido_id: int
+    tipo: str
+    motivo: str
+
+class EventoModel(BaseModel):
+    agente: str
+    accion: str
+    pedido_id: Optional[int] = None
+    entrada_json: Optional[str] = None
+    salida_json: Optional[str] = None
+    evidencia: Optional[str] = None
+
 # ==========================================
 # ALERTAS DE STOCK
 # ==========================================
 def verificar_alerta_stock(cursor, producto_id: int):
-    UMBRAL_MINIMO = 50
-    cursor.execute("SELECT id, nombre, stock_fisico, stock_reservado FROM productos WHERE id = ?", (producto_id,))
+    cursor.execute("SELECT id, nombre, stock_fisico, stock_reservado, stock_minimo FROM productos WHERE id = ?", (producto_id,))
     prod = cursor.fetchone()
     if not prod:
         return
     stock_disponible = prod["stock_fisico"] - prod["stock_reservado"]
-    if stock_disponible <= UMBRAL_MINIMO:
+    umbral = prod["stock_minimo"] if prod["stock_minimo"] is not None else 50
+    if stock_disponible <= umbral:
         cursor.execute("SELECT id FROM alertas_stock WHERE producto_id = ? AND estado = 'PENDIENTE'", (producto_id,))
         if not cursor.fetchone():
             cursor.execute("INSERT INTO alertas_stock (producto_id, stock_actual, estado) VALUES (?, ?, 'PENDIENTE')", (producto_id, stock_disponible))
@@ -479,6 +497,9 @@ def crear_cliente(c: ClienteModel, usuario_sesion: dict = Depends(usuario_actual
         cursor.execute("INSERT INTO clientes (razon_social, cuit, direccion_entrega, telefono, condicion_fiscal, medio_pago, limite_credito, saldo_actual, estado, usuario_dueno) VALUES (?, ?, ?, ?, ?, ?, 0.0, 0.0, 'ACTIVO', ?)", (c.razon_social, c.cuit, c.direccion, c.telefono, c.condicion_fiscal, c.medio_pago, username))
         conexion.commit()
         return {"mensaje": "Cliente creado con éxito en su cartera", "id": cursor.lastrowid}
+    except sqlite3.IntegrityError:
+        conexion.rollback()
+        raise HTTPException(status_code=400, detail=f"El CUIT/DNI '{c.cuit}' ya está registrado. Por favor, verificá el número.")
     except Exception as e:
         conexion.rollback()
         raise HTTPException(status_code=500, detail=str(e))
@@ -550,6 +571,70 @@ def eliminar_cliente(cliente_id: int, usuario_sesion: dict = Depends(usuario_act
 # ==========================================
 # PEDIDOS
 # ==========================================
+@app.get("/pedidos/todos", summary="Historial de pedidos")
+def listar_todos_pedidos(usuario_sesion: dict = Depends(usuario_actual)):
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    asegurar_esquema(cursor)
+    conexion.commit()
+    if usuario_sesion["rol"] in ("admin", "agente"):
+        cursor.execute("SELECT p.id, p.fecha, p.estado, p.total, p.observaciones_agente, p.fecha_entrega, c.razon_social, p.usuario_id FROM pedidos p LEFT JOIN clientes c ON p.cliente_id = c.id ORDER BY p.fecha DESC")
+    else:
+        cursor.execute("SELECT p.id, p.fecha, p.estado, p.total, p.observaciones_agente, p.fecha_entrega, c.razon_social, p.usuario_id FROM pedidos p LEFT JOIN clientes c ON p.cliente_id = c.id WHERE p.usuario_id = ? ORDER BY p.fecha DESC", (usuario_sesion["id"],))
+    res = []
+    for f in cursor.fetchall():
+        p = dict(f)
+        p["estado_cliente"] = ESTADOS_CLIENTE.get(p["estado"], p["estado"])
+        res.append(p)
+    conexion.close()
+    return res
+
+@app.get("/pedidos/entrega/{fecha}", summary="Listar pedidos que se entregan en una fecha")
+def listar_pedidos_por_fecha_entrega(fecha: str, usuario_sesion: dict = Depends(usuario_actual)):
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    try:
+        cursor.execute("""
+            SELECT p.id, p.fecha, p.estado, p.total, p.fecha_entrega, c.razon_social
+            FROM pedidos p
+            LEFT JOIN clientes c ON p.cliente_id = c.id
+            WHERE p.fecha_entrega = ?
+            ORDER BY p.id ASC
+        """, (fecha,))
+        pedidos = [dict(f) for f in cursor.fetchall()]
+        conexion.close()
+        return pedidos
+    except Exception as e:
+        conexion.close()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/pedidos", summary="Listar pedidos filtrados por estado")
+def listar_pedidos_por_estado(estado: Optional[str] = None, usuario_sesion: dict = Depends(usuario_actual)):
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    try:
+        if estado:
+            cursor.execute("""
+                SELECT p.id, p.fecha, p.estado, p.total, p.fecha_entrega, c.razon_social
+                FROM pedidos p
+                LEFT JOIN clientes c ON p.cliente_id = c.id
+                WHERE p.estado = ?
+                ORDER BY p.fecha DESC
+            """, (estado.upper(),))
+        else:
+            cursor.execute("""
+                SELECT p.id, p.fecha, p.estado, p.total, p.fecha_entrega, c.razon_social
+                FROM pedidos p
+                LEFT JOIN clientes c ON p.cliente_id = c.id
+                ORDER BY p.fecha DESC
+            """)
+        pedidos = [dict(f) for f in cursor.fetchall()]
+        conexion.close()
+        return pedidos
+    except Exception as e:
+        conexion.close()
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/pedidos", summary="Crear pedido")
 def crear_pedido(pedido: PedidoCreate, usuario_sesion: dict = Depends(usuario_actual)):
     conexion = obtener_conexion()
@@ -593,8 +678,13 @@ def crear_pedido(pedido: PedidoCreate, usuario_sesion: dict = Depends(usuario_ac
             pdf_data.append([prod["codigo"], prod["nombre"], str(item.cantidad), f"${prod['precio']:,.2f}", f"${subtotal:,.2f}"])
 
         fecha_actual = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        cursor.execute("INSERT INTO pedidos (cliente_id, fecha, estado, total, observaciones_agente, usuario_id) VALUES (?, ?, 'RECIBIDO', ?, ?, ?)", (cliente_id, fecha_actual, total, pedido.observaciones_agente, usuario_sesion["id"]))
+        fecha_entrega_final = pedido.fecha_entrega if pedido.fecha_entrega else (date.today() + timedelta(days=1)).isoformat()
+        
+        cursor.execute("INSERT INTO pedidos (cliente_id, fecha, estado, total, observaciones_agente, usuario_id, fecha_entrega) VALUES (?, ?, 'RECIBIDO', ?, ?, ?, ?)", (cliente_id, fecha_actual, total, pedido.observaciones_agente, usuario_sesion["id"], fecha_entrega_final))
         pedido_id = cursor.lastrowid
+        
+        cursor.execute("INSERT INTO pedido_historial_estados (pedido_id, estado_anterior, estado_nuevo, cambiado_por) VALUES (?, NULL, 'RECIBIDO', ?)", (pedido_id, usuario_sesion.get("usuario") or usuario_sesion["email"]))
+        
         for d in detalles:
             cursor.execute("INSERT INTO detalle_pedidos (pedido_id, producto_id, cantidad, precio_unitario) VALUES (?, ?, ?, ?)", (pedido_id, d["producto_id"], d["cantidad"], d["precio_unitario"]))
             cursor.execute("UPDATE productos SET stock_reservado = stock_reservado + ? WHERE id = ? AND (stock_fisico - stock_reservado) >= ?", (d["cantidad"], d["producto_id"], d["cantidad"]))
@@ -658,6 +748,56 @@ def crear_pedido(pedido: PedidoCreate, usuario_sesion: dict = Depends(usuario_ac
     finally:
         conexion.close()
 
+@app.get("/pedidos/{pedido_id}", summary="Obtener detalle completo de un pedido")
+def obtener_pedido(pedido_id: int, usuario_sesion: dict = Depends(usuario_actual)):
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    try:
+        cursor.execute("SELECT * FROM pedidos WHERE id = ?", (pedido_id,))
+        pedido_row = cursor.fetchone()
+        if not pedido_row:
+            raise HTTPException(status_code=404, detail="Pedido no encontrado.")
+        pedido = dict(pedido_row)
+        cursor.execute("SELECT id, razon_social, cuit, direccion_entrega, saldo_actual, limite_credito FROM clientes WHERE id = ?", (pedido["cliente_id"],))
+        pedido["cliente"] = dict(cursor.fetchone())
+        cursor.execute("""
+            SELECT dp.producto_id, dp.cantidad, dp.precio_unitario, p.codigo, p.nombre
+            FROM detalle_pedidos dp
+            JOIN productos p ON dp.producto_id = p.id
+            WHERE dp.pedido_id = ?
+        """, (pedido_id,))
+        pedido["items"] = [dict(f) for f in cursor.fetchall()]
+        conexion.close()
+        return pedido
+    except Exception as e:
+        conexion.close()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/pedidos/{pedido_id}/asignar-fecha", summary="Asignar o cambiar la fecha de entrega")
+def asignar_fecha_entrega(pedido_id: int, fecha: str, usuario_sesion: dict = Depends(usuario_actual)):
+    if usuario_sesion["rol"] not in ("admin", "agente"):
+        raise HTTPException(status_code=403, detail="Acceso denegado.")
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    try:
+        cursor.execute("SELECT * FROM pedidos WHERE id = ?", (pedido_id,))
+        pedido = cursor.fetchone()
+        if not pedido:
+            raise HTTPException(status_code=404, detail="Pedido no encontrado.")
+        cursor.execute("UPDATE pedidos SET fecha_entrega = ? WHERE id = ?", (fecha, pedido_id))
+        quien = usuario_sesion.get("usuario") or usuario_sesion["email"]
+        cursor.execute("""
+            INSERT INTO pedido_historial_estados (pedido_id, estado_anterior, estado_nuevo, fecha, cambiado_por)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)
+        """, (pedido_id, pedido["estado"], pedido["estado"], f"{quien} (cambió fecha de entrega a {fecha})"))
+        conexion.commit()
+        conexion.close()
+        return {"mensaje": f"Fecha de entrega del pedido {pedido_id} actualizada a {fecha}."}
+    except Exception as e:
+        conexion.rollback()
+        conexion.close()
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.patch("/pedidos/{pedido_id}/estado", summary="Cambiar estado de un pedido")
 def cambiar_estado_pedido(pedido_id: int, datos: CambioEstadoModel, usuario_sesion: dict = Depends(usuario_actual)):
     if usuario_sesion["rol"] not in ("admin", "agente"):
@@ -686,18 +826,25 @@ def cambiar_estado_pedido(pedido_id: int, datos: CambioEstadoModel, usuario_sesi
             raise HTTPException(status_code=400, detail=f"Estado '{nuevo}' inválido.")
         if nuevo not in TRANS.get(est_act, []):
             raise HTTPException(status_code=400, detail=f"Transición inválida: {est_act} -> {nuevo}")
+        
         if nuevo == "PREPARADO":
-            cursor.execute("SELECT producto_id, cantidad FROM detalle_pedidos WHERE pedido_id = ?", (pedido_id,))
-            for d in cursor.fetchall():
-                cursor.execute("UPDATE productos SET stock_fisico = stock_fisico - ?, stock_reservado = stock_reservado - ? WHERE id = ? AND stock_reservado >= ? AND stock_fisico >= ?", (d["cantidad"], d["cantidad"], d["producto_id"], d["cantidad"], d["cantidad"]))
-                if cursor.rowcount == 0:
-                    raise HTTPException(status_code=409, detail="Inconsistencia de stock.")
-                verificar_alerta_stock(cursor, d["producto_id"])
+            cursor.execute("SELECT COUNT(*) as count FROM pedido_historial_estados WHERE pedido_id = ? AND estado_nuevo = 'PREPARADO'", (pedido_id,))
+            ya_preparado = cursor.fetchone()["count"] > 0
+            
+            if not ya_preparado:
+                cursor.execute("SELECT producto_id, cantidad FROM detalle_pedidos WHERE pedido_id = ?", (pedido_id,))
+                for d in cursor.fetchall():
+                    cursor.execute("UPDATE productos SET stock_fisico = stock_fisico - ?, stock_reservado = stock_reservado - ? WHERE id = ? AND stock_reservado >= ? AND stock_fisico >= ?", (d["cantidad"], d["cantidad"], d["producto_id"], d["cantidad"], d["cantidad"]))
+                    if cursor.rowcount == 0:
+                        raise HTTPException(status_code=409, detail="Inconsistencia de stock.")
+                    verificar_alerta_stock(cursor, d["producto_id"])
+                    
         if nuevo == "CANCELADO":
             cursor.execute("SELECT producto_id, cantidad FROM detalle_pedidos WHERE pedido_id = ?", (pedido_id,))
             for d in cursor.fetchall():
                 cursor.execute("UPDATE productos SET stock_reservado = stock_reservado - ? WHERE id = ? AND stock_reservado >= ?", (d["cantidad"], d["producto_id"], d["cantidad"]))
             cursor.execute("UPDATE clientes SET saldo_actual = saldo_actual - (SELECT total FROM pedidos WHERE id = ?) WHERE id = (SELECT cliente_id FROM pedidos WHERE id = ?)", (pedido_id, pedido_id))
+            
         quien = usuario_sesion.get("usuario") or usuario_sesion["email"]
         cursor.execute("UPDATE pedidos SET estado_anterior = estado, estado = ? WHERE id = ?", (nuevo, pedido_id))
         cursor.execute("INSERT INTO pedido_historial_estados (pedido_id, estado_anterior, estado_nuevo, cambiado_por) VALUES (?, ?, ?, ?)", (pedido_id, est_act, nuevo, quien))
@@ -729,23 +876,63 @@ def seguimiento_pedido(pedido_id: int, usuario_sesion: dict = Depends(usuario_ac
         conexion.close()
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/pedidos/todos", summary="Historial de pedidos")
-def listar_todos_pedidos(usuario_sesion: dict = Depends(usuario_actual)):
+# ==========================================
+# EXCEPCIONES
+# ==========================================
+@app.post("/excepciones", summary="Registrar una excepción")
+def crear_excepcion(datos: ExcepcionModel, usuario_sesion: dict = Depends(usuario_actual)):
+    if usuario_sesion["rol"] not in ("admin", "agente"):
+        raise HTTPException(status_code=403, detail="Acceso denegado.")
     conexion = obtener_conexion()
     cursor = conexion.cursor()
-    asegurar_esquema(cursor)
-    conexion.commit()
-    if usuario_sesion["rol"] in ("admin", "agente"):
-        cursor.execute("SELECT p.id, p.fecha, p.estado, p.total, p.observaciones_agente, c.razon_social, p.usuario_id FROM pedidos p LEFT JOIN clientes c ON p.cliente_id = c.id ORDER BY p.fecha DESC")
-    else:
-        cursor.execute("SELECT p.id, p.fecha, p.estado, p.total, p.observaciones_agente, c.razon_social, p.usuario_id FROM pedidos p LEFT JOIN clientes c ON p.cliente_id = c.id WHERE p.usuario_id = ? ORDER BY p.fecha DESC", (usuario_sesion["id"],))
-    res = []
-    for f in cursor.fetchall():
-        p = dict(f)
-        p["estado_cliente"] = ESTADOS_CLIENTE.get(p["estado"], p["estado"])
-        res.append(p)
+    try:
+        cursor.execute("SELECT estado FROM pedidos WHERE id = ?", (datos.pedido_id,))
+        pedido = cursor.fetchone()
+        if not pedido:
+            raise HTTPException(status_code=404, detail="Pedido no encontrado.")
+        
+        cursor.execute("INSERT INTO excepciones (pedido_id, tipo, motivo, estado) VALUES (?, ?, ?, 'ABIERTA')", (datos.pedido_id, datos.tipo, datos.motivo))
+        cursor.execute("UPDATE pedidos SET estado = 'EXCEPCION' WHERE id = ?", (datos.pedido_id,))
+        cursor.execute("INSERT INTO pedido_historial_estados (pedido_id, estado_anterior, estado_nuevo, cambiado_por) VALUES (?, ?, 'EXCEPCION', ?)", (datos.pedido_id, pedido["estado"], usuario_sesion["email"]))
+        conexion.commit()
+        excepcion_id = cursor.lastrowid
+        conexion.close()
+        return {"mensaje": "Excepción registrada.", "excepcion_id": excepcion_id}
+    except HTTPException:
+        conexion.rollback()
+        conexion.close()
+        raise
+    except Exception as e:
+        conexion.rollback()
+        conexion.close()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/excepciones", summary="Listar excepciones abiertas")
+def listar_excepciones(usuario_sesion: dict = Depends(usuario_actual)):
+    if usuario_sesion["rol"] not in ("admin", "agente"):
+        raise HTTPException(status_code=403, detail="Acceso denegado.")
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    cursor.execute("SELECT e.id, e.pedido_id, e.tipo, e.motivo, e.fecha, p.estado FROM excepciones e JOIN pedidos p ON e.pedido_id = p.id WHERE e.estado = 'ABIERTA' ORDER BY e.fecha DESC")
+    res = [dict(f) for f in cursor.fetchall()]
     conexion.close()
     return res
+
+@app.patch("/excepciones/{excepcion_id}/resolver", summary="Resolver una excepción")
+def resolver_excepcion(excepcion_id: int, usuario_sesion: dict = Depends(usuario_actual)):
+    if usuario_sesion["rol"] not in ("admin", "agente"):
+        raise HTTPException(status_code=403, detail="Acceso denegado.")
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    try:
+        cursor.execute("UPDATE excepciones SET estado = 'RESUELTA', resuelta_por = ? WHERE id = ?", (usuario_sesion["email"], excepcion_id))
+        conexion.commit()
+        conexion.close()
+        return {"mensaje": "Excepción resuelta."}
+    except Exception as e:
+        conexion.rollback()
+        conexion.close()
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ==========================================
 # NUEVOS ENDPOINTS DE LOGÍSTICA
@@ -766,21 +953,25 @@ def facturar_pedido(pedido_id: int, usuario_sesion: dict = Depends(usuario_actua
         subtotal = p["total"]
         impuestos = subtotal * 0.21
         total = subtotal + impuestos
-        numero = f"FAC-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        cursor.execute("SELECT COUNT(*) as count FROM facturas")
+        count = cursor.fetchone()["count"]
+        numero = f"FAC-{count + 1:04d}"
         cursor.execute("INSERT INTO facturas (pedido_id, numero, subtotal, impuestos, total, estado) VALUES (?, ?, ?, ?, ?, 'EMITIDA')", (pedido_id, numero, subtotal, impuestos, total))
-        cursor.execute("INSERT INTO movimientos_cuenta (cliente_id, tipo, monto, pedido_id) VALUES (?, 'PEDIDO', ?, ?)", (p["cliente_id"], total, pedido_id))
+        factura_id = cursor.lastrowid
+        cursor.execute("INSERT INTO movimientos_cuenta (cliente_id, tipo, monto, pedido_id) VALUES (?, 'PEDIDO', ?, ?)", (p["cliente_id"], subtotal, pedido_id))
         cursor.execute("UPDATE pedidos SET estado = 'FACTURADO' WHERE id = ?", (pedido_id,))
         cursor.execute("INSERT INTO pedido_historial_estados (pedido_id, estado_anterior, estado_nuevo, cambiado_por) VALUES (?, 'PREPARADO', 'FACTURADO', ?)", (pedido_id, usuario_sesion["email"]))
         conexion.commit()
-        return {"mensaje": "Factura emitida.", "factura_id": cursor.lastrowid, "numero": numero, "total": total}
+        conexion.close()
+        return {"mensaje": "Factura emitida.", "factura_id": factura_id, "numero": numero, "total": total}
     except HTTPException:
         conexion.rollback()
+        conexion.close()
         raise
     except Exception as e:
         conexion.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
         conexion.close()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/pedidos/{pedido_id}/armar", summary="Registrar armado")
 def armar_pedido(pedido_id: int, datos: ArmadoModel, usuario_sesion: dict = Depends(usuario_actual)):
@@ -802,15 +993,16 @@ def armar_pedido(pedido_id: int, datos: ArmadoModel, usuario_sesion: dict = Depe
         cursor.execute("UPDATE pedidos SET estado = 'ARMADO' WHERE id = ?", (pedido_id,))
         cursor.execute("INSERT INTO pedido_historial_estados (pedido_id, estado_anterior, estado_nuevo, cambiado_por) VALUES (?, 'FACTURADO', 'ARMADO', ?)", (pedido_id, usuario_sesion["email"]))
         conexion.commit()
+        conexion.close()
         return {"mensaje": "Pedido armado."}
     except HTTPException:
         conexion.rollback()
+        conexion.close()
         raise
     except Exception as e:
         conexion.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
         conexion.close()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/rutas/planificar", summary="Planificar ruta")
 def planificar_ruta(datos: PlanificacionRutaModel, usuario_sesion: dict = Depends(usuario_actual)):
@@ -833,15 +1025,16 @@ def planificar_ruta(datos: PlanificacionRutaModel, usuario_sesion: dict = Depend
             cursor.execute("UPDATE pedidos SET estado = 'CARGADO' WHERE id = ?", (pid,))
             cursor.execute("INSERT INTO pedido_historial_estados (pedido_id, estado_anterior, estado_nuevo, cambiado_por) VALUES (?, 'ARMADO', 'CARGADO', ?)", (pid, usuario_sesion["email"]))
         conexion.commit()
+        conexion.close()
         return {"mensaje": f"Ruta planificada: {len(datos.orden_carga)} pedidos."}
     except HTTPException:
         conexion.rollback()
+        conexion.close()
         raise
     except Exception as e:
         conexion.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
         conexion.close()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/entregas/{pedido_id}", summary="Registrar entrega")
 def registrar_entrega(pedido_id: int, datos: EntregaModel, usuario_sesion: dict = Depends(usuario_actual)):
@@ -867,15 +1060,16 @@ def registrar_entrega(pedido_id: int, datos: EntregaModel, usuario_sesion: dict 
         cursor.execute("UPDATE pedidos SET estado = ? WHERE id = ?", (nuevo, pedido_id))
         cursor.execute("INSERT INTO pedido_historial_estados (pedido_id, estado_anterior, estado_nuevo, cambiado_por) VALUES (?, ?, ?, ?)", (pedido_id, p["estado"], nuevo, usuario_sesion["email"]))
         conexion.commit()
+        conexion.close()
         return {"mensaje": "Entrega registrada.", "nuevo_estado": nuevo}
     except HTTPException:
         conexion.rollback()
+        conexion.close()
         raise
     except Exception as e:
         conexion.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
         conexion.close()
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ==========================================
 # ALERTAS DE STOCK
@@ -901,6 +1095,28 @@ def resolver_alerta(alerta_id: int, usuario_sesion: dict = Depends(usuario_actua
     conexion.commit()
     conexion.close()
     return {"mensaje": "Alerta resuelta."}
+
+# ==========================================
+# EVENTOS
+# ==========================================
+@app.post("/eventos", summary="Registrar un evento")
+def crear_evento(evento: EventoModel, usuario_sesion: dict = Depends(usuario_actual)):
+    if usuario_sesion["rol"] not in ("admin", "agente"):
+        raise HTTPException(status_code=403, detail="Acceso denegado.")
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    try:
+        cursor.execute("""
+            INSERT INTO eventos_log (agente, pedido_id, accion, entrada_json, salida_json, evidencia)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (evento.agente, evento.pedido_id, evento.accion, evento.entrada_json, evento.salida_json, evento.evidencia))
+        conexion.commit()
+        conexion.close()
+        return {"mensaje": "Evento registrado.", "evento_id": cursor.lastrowid}
+    except Exception as e:
+        conexion.rollback()
+        conexion.close()
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ==========================================
 # COMPATIBILIDAD

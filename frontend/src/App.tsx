@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { obtenerProductos } from './services/api';
 import { AuthView } from './components/AuthView';
-import { Key, LogOut, ChevronDown, X, AlertCircle, CheckCircle2, Menu } from 'lucide-react';
+import { Key, LogOut, ChevronDown, X, AlertCircle, CheckCircle2, Menu, Truck, ShoppingCart } from 'lucide-react';
 import './App.css';
 
 const API_URL = 'http://localhost:8001';
@@ -211,6 +211,7 @@ export default function App() {
   const [cantidadesTemp, setCantidadesTemp] = useState<{ [key: number]: number }>({});
   const [carrito, setCarrito] = useState<{ [key: number]: number }>({});
   const [observaciones, setObservaciones] = useState('');
+  const [fechaEntrega, setFechaEntrega] = useState<string>('');
   const [mensajePedido, setMensajePedido] = useState('');
   const [vistaActual, setVistaActual] = useState<'catalogo' | 'clientes' | 'historial'>('catalogo');
   const [carritoAbierto, setCarritoAbierto] = useState(false);
@@ -237,6 +238,29 @@ export default function App() {
     }
   }, [usuarioLogueado]);
 
+  // POLLING PARA AVISO DE CAMBIO DE ESTADO (M2)
+  useEffect(() => {
+    if (!usuarioLogueado) return;
+    const interval = setInterval(async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const res = await fetch(`${API_URL}/pedidos/todos`, { headers: { 'Authorization': `Bearer ${token}` } });
+        if (res.ok) {
+          const nuevosPedidos = await res.json();
+          nuevosPedidos.forEach((nuevo: any) => {
+            const viejo = pedidos.find((p: any) => p.id === nuevo.id);
+            if (viejo && viejo.estado !== nuevo.estado) {
+              setMensajePedido(`El pedido #${nuevo.id} cambió a: ${nuevo.estado_cliente}`);
+              setTimeout(() => setMensajePedido(''), 5000);
+            }
+          });
+          setPedidos(nuevosPedidos);
+        }
+      } catch (err) { console.error("Error en polling:", err); }
+    }, 15000);
+    return () => clearInterval(interval);
+  }, [usuarioLogueado, pedidos]);
+
   const cargarDatosIniciales = async () => {
     setCargandoProductos(true);
     try {
@@ -247,18 +271,12 @@ export default function App() {
       const headers = { 'Authorization': `Bearer ${token}` };
 
       const resClientes = await fetch(`${API_URL}/clientes`, { headers });
-      if (resClientes.status === 401) {
-        handleLogout();
-        return;
-      }
+      if (resClientes.status === 401) { handleLogout(); return; }
       const dataClientes = await resClientes.json();
       setClientes(dataClientes);
 
       const resPedidos = await fetch(`${API_URL}/pedidos/todos`, { headers });
-      if (resPedidos.status === 401) {
-        handleLogout();
-        return;
-      }
+      if (resPedidos.status === 401) { handleLogout(); return; }
       const dataPedidos = await resPedidos.json();
       setPedidos(dataPedidos);
     } catch (err) {
@@ -276,46 +294,26 @@ export default function App() {
   const cambiarCantidadTemp = (productoId: number, delta: number) => {
     const prod = productos.find(p => p.id === productoId);
     if (!prod) return;
-
     const actual = cantidadesTemp[productoId] || 0;
     const nueva = actual + delta;
-
     const stockDisponibles = (prod.stock_disponible !== undefined) ? prod.stock_disponible : (prod.stock_fisico - (prod.stock_reservado || 0));
-
     if (nueva < 0) return;
-    if (nueva > stockDisponibles) {
-      alert("No hay suficiente stock disponible en depósito.");
-      return;
-    }
-
+    if (nueva > stockDisponibles) { alert("No hay suficiente stock disponible en depósito."); return; }
     setCantidadesTemp({ ...cantidadesTemp, [productoId]: nueva });
   };
 
   const agregarAlCarritoDesdeCatalogo = (productoId: number) => {
     const cantidadSeleccionada = cantidadesTemp[productoId] || 0;
-    if (cantidadSeleccionada <= 0) {
-      alert("Selecciona al menos 1 unidad para agregar.");
-      return;
-    }
-
+    if (cantidadSeleccionada <= 0) { alert("Selecciona al menos 1 unidad para agregar."); return; }
     const prod = productos.find(p => p.id === productoId);
     if (!prod) return;
-
     const stockDisponibles = (prod.stock_disponible !== undefined) ? prod.stock_disponible : (prod.stock_fisico - (prod.stock_reservado || 0));
-
-    if (stockDisponibles < cantidadSeleccionada) {
-      alert("Stock disponible insuficiente.");
-      return;
-    }
-
+    if (stockDisponibles < cantidadSeleccionada) { alert("Stock disponible insuficiente."); return; }
+    
     setProductos(productos.map(p => {
       if (p.id === productoId) {
         const nuevoReservado = (p.stock_reservado || 0) + cantidadSeleccionada;
-        return { 
-          ...p, 
-          stock_reservado: nuevoReservado,
-          stock_disponible: p.stock_fisico - nuevoReservado
-        };
+        return { ...p, stock_reservado: nuevoReservado, stock_disponible: p.stock_fisico - nuevoReservado };
       }
       return p;
     }));
@@ -323,32 +321,20 @@ export default function App() {
     const carritoActual = carrito[productoId] || 0;
     setCarrito({ ...carrito, [productoId]: carritoActual + cantidadSeleccionada });
     setCantidadesTemp({ ...cantidadesTemp, [productoId]: 0 });
-    
-    // Nota: Ya NO abrimos el carrito automáticamente acá.
   };
 
   const ajustarCantidadCarrito = (productoId: number, nuevaCant: number) => {
     const prodOriginal = productos.find(p => p.id === productoId);
     if (!prodOriginal) return;
-
     const cantActualEnCarrito = carrito[productoId] || 0;
     const diferencia = nuevaCant - cantActualEnCarrito;
-
     const stockDisponibles = (prodOriginal.stock_disponible !== undefined) ? prodOriginal.stock_disponible : (prodOriginal.stock_fisico - (prodOriginal.stock_reservado || 0));
-
-    if (diferencia > 0 && stockDisponibles < diferencia) {
-      alert("Stock disponible insuficiente en depósito.");
-      return;
-    }
-
+    if (diferencia > 0 && stockDisponibles < diferencia) { alert("Stock disponible insuficiente en depósito."); return; }
+    
     setProductos(productos.map(p => {
       if (p.id === productoId) {
         const nuevoReservado = (p.stock_reservado || 0) + diferencia;
-        return { 
-          ...p, 
-          stock_reservado: nuevoReservado,
-          stock_disponible: p.stock_fisico - nuevoReservado
-        };
+        return { ...p, stock_reservado: nuevoReservado, stock_disponible: p.stock_fisico - nuevoReservado };
       }
       return p;
     }));
@@ -365,11 +351,7 @@ export default function App() {
     setProductos(productos.map(p => {
       if (p.id === productoId) {
         const nuevoReservado = Math.max(0, (p.stock_reservado || 0) - cantEnCarrito);
-        return { 
-          ...p, 
-          stock_reservado: nuevoReservado,
-          stock_disponible: p.stock_fisico - nuevoReservado
-        };
+        return { ...p, stock_reservado: nuevoReservado, stock_disponible: p.stock_fisico - nuevoReservado };
       }
       return p;
     }));
@@ -381,10 +363,7 @@ export default function App() {
   const seleccionarClienteExistente = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const id = e.target.value;
     setClienteSeleccionadoId(id);
-    if (!id) {
-      setRazonSocial(''); setCuit(''); setDireccion(''); setTelefono('');
-      return;
-    }
+    if (!id) { setRazonSocial(''); setCuit(''); setDireccion(''); setTelefono(''); return; }
     const cli = clientes.find(c => c.id === Number(id));
     if (cli) {
       setRazonSocial(cli.razon_social);
@@ -398,100 +377,53 @@ export default function App() {
 
   const guardarClienteManual = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!razonSocial || !cuit || !direccion) {
-      alert("Complete los campos obligatorios.");
-      return;
-    }
-
-    const payload = { 
-      razon_social: razonSocial, 
-      cuit, 
-      direccion, 
-      condicion_fiscal: condicionFiscal, 
-      medio_pago: medioPago, 
-      telefono
-    };
-
+    if (!razonSocial || !cuit || !direccion) { alert("Complete los campos obligatorios."); return; }
+    const payload = { razon_social: razonSocial, cuit, direccion, condicion_fiscal: condicionFiscal, medio_pago: medioPago, telefono };
     const token = localStorage.getItem('token');
-    const headers = { 
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}` 
-    };
-
+    const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` };
     try {
       if (modoCliente === 'editar' && clienteEditandoId) {
-        await fetch(`${API_URL}/clientes/${clienteEditandoId}`, {
-          method: 'PUT',
-          headers,
-          body: JSON.stringify(payload)
-        });
+        await fetch(`${API_URL}/clientes/${clienteEditandoId}`, { method: 'PUT', headers, body: JSON.stringify(payload) });
       } else {
-        await fetch(`${API_URL}/clientes`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(payload)
-        });
+        await fetch(`${API_URL}/clientes`, { method: 'POST', headers, body: JSON.stringify(payload) });
       }
       await cargarDatosIniciales();
       setModoCliente('lista');
       setClienteEditandoId(null);
       setRazonSocial(''); setCuit(''); setDireccion(''); setTelefono('');
-    } catch (err) {
-      alert("Error al guardar cliente.");
-    }
+    } catch (err) { alert("Error al guardar cliente."); }
   };
 
   const eliminarClienteDirecto = async (id: number) => {
     if (!confirm("¿Desea eliminar este cliente?")) return;
     const token = localStorage.getItem('token');
-    await fetch(`${API_URL}/clientes/${id}`, { 
-      method: 'DELETE',
-      headers: { 'Authorization': `Bearer ${token}` }
-    });
+    await fetch(`${API_URL}/clientes/${id}`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${token}` } });
     cargarDatosIniciales();
   };
 
   const enviarPedido = async () => {
     setMensajePedido('');
-    const items = Object.entries(carrito).map(([idStr, cantidad]) => ({
-      producto_id: Number(idStr),
-      cantidad: Number(cantidad)
-    }));
-
-    if (items.length === 0) {
-      alert("El carrito está vacío.");
-      return;
-    }
-    if (!razonSocial || !cuit || !direccion) {
-      alert("Complete los datos del cliente.");
-      return;
-    }
+    const items = Object.entries(carrito).map(([idStr, cantidad]) => ({ producto_id: Number(idStr), cantidad: Number(cantidad) }));
+    if (items.length === 0) { alert("El carrito está vacío."); return; }
+    if (!razonSocial || !cuit || !direccion) { alert("Complete los datos del cliente."); return; }
 
     try {
       const bodyData = clienteSeleccionadoId ? {
         cliente_id: Number(clienteSeleccionadoId),
         observaciones_agente: observaciones,
+        fecha_entrega: fechaEntrega || undefined,
         items: items
       } : {
-        datos_cliente: { 
-          razon_social: razonSocial, 
-          cuit, 
-          direccion, 
-          condicion_fiscal: condicionFiscal, 
-          medio_pago: medioPago, 
-          telefono
-        },
+        datos_cliente: { razon_social: razonSocial, cuit, direccion, condicion_fiscal: condicionFiscal, medio_pago: medioPago, telefono },
         observaciones_agente: observaciones,
+        fecha_entrega: fechaEntrega || undefined,
         items: items
       };
 
       const token = localStorage.getItem('token');
       const response = await fetch(`${API_URL}/pedidos`, {
         method: "POST",
-        headers: { 
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${token}` 
-        },
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
         body: JSON.stringify(bodyData)
       });
 
@@ -499,59 +431,42 @@ export default function App() {
       if (!response.ok) throw new Error(data.detail || "Error al procesar pedido.");
 
       setMensajePedido(`¡Orden #${data.pedido_id} generada con éxito y reservada en depósito!`);
-      setTimeout(() => {
-        setMensajePedido('');
-      }, 2500);
+      setTimeout(() => { setMensajePedido(''); }, 2500);
 
       setCarrito({});
       setCantidadesTemp({});
       setObservaciones('');
+      setFechaEntrega('');
       setCarritoAbierto(false);
       cargarDatosIniciales();
-    } catch (err: any) {
-      alert(`Error: ${err.message}`);
-    }
+    } catch (err: any) { alert(`Error: ${err.message}`); }
   };
 
   const avanzarEstadoPedido = async (pedidoId: number, nuevoEstado: string) => {
     if (!confirm(`¿Estás seguro de avanzar el pedido #${pedidoId} a "${nuevoEstado}"?`)) return;
-    
     try {
       const token = localStorage.getItem('token');
       const res = await fetch(`${API_URL}/pedidos/${pedidoId}/estado`, {
         method: 'PATCH',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}` 
-        },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({ nuevo_estado: nuevoEstado })
       });
-
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Error al cambiar estado");
-
       alert(data.mensaje);
       cargarDatosIniciales();
-    } catch (err: any) {
-      alert(`Error: ${err.message}`);
-    }
+    } catch (err: any) { alert(`Error: ${err.message}`); }
   };
 
   const abrirSeguimiento = async (pedido: any) => {
     setPedidoSeleccionado(pedido);
     setModalSeguimientoAbierto(true);
     setLineaTiempo([]);
-
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch(`${API_URL}/pedidos/${pedido.id}/seguimiento`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      const data = await res.json();
-      setLineaTiempo(data);
-    } catch (err) {
-      console.error(err);
-    }
+      const res = await fetch(`${API_URL}/pedidos/${pedido.id}/seguimiento`, { headers: { 'Authorization': `Bearer ${token}` } });
+      setLineaTiempo(await res.json());
+    } catch (err) { console.error(err); }
   };
 
   const calcularTotal = () => {
@@ -575,6 +490,19 @@ export default function App() {
     return <AuthView onLoginSuccess={(u) => setUsuarioLogueado(u)} />;
   }
 
+  const pedidosAgrupados = pedidos.reduce((acc: Record<string, any[]>, ped: any) => {
+    const fecha = ped.fecha_entrega || 'Sin fecha asignada';
+    if (!acc[fecha]) acc[fecha] = [];
+    acc[fecha].push(ped);
+    return acc;
+  }, {} as Record<string, any[]>);
+
+  const fechasOrdenadas = Object.keys(pedidosAgrupados).sort((a, b) => {
+    if (a === 'Sin fecha asignada') return 1;
+    if (b === 'Sin fecha asignada') return -1;
+    return a.localeCompare(b);
+  });
+
   return (
     <div style={{ minHeight: '100vh', background: '#f8fafc', paddingBottom: '60px', fontFamily: 'Inter, sans-serif', width: '100%', boxSizing: 'border-box' }}>
       
@@ -583,16 +511,14 @@ export default function App() {
         
         {/* Logo y Botón Menú Móvil */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <button 
-            onClick={() => setMenuMovilAbierto(!menuMovilAbierto)} 
-            style={{ display: 'none', background: 'rgba(255,255,255,0.1)', border: 'none', color: '#fff', padding: '8px', borderRadius: '10px', cursor: 'pointer' }}
-            className="mobile-menu-btn"
-          >
+          <button onClick={() => setMenuMovilAbierto(!menuMovilAbierto)} style={{ display: 'none', background: 'rgba(255,255,255,0.1)', border: 'none', color: '#fff', padding: '8px', borderRadius: '10px', cursor: 'pointer' }} className="mobile-menu-btn">
             <Menu size={22} />
           </button>
           
           <div onClick={() => setVistaActual('catalogo')} style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
-            <div style={{ background: '#3b82f6', width: '40px', height: '40px', borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '20px', boxShadow: '0 4px 10px rgba(59,130,246,0.3)' }}>📦</div>
+            <div style={{ background: '#3b82f6', width: '40px', height: '40px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '12px', boxShadow: '0 4px 10px rgba(59,130,246,0.3)' }}>
+              <Truck size={22} color="#fff" />
+            </div>
             <div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <h2 style={{ margin: '0', fontSize: '18px', fontWeight: '800', color: '#fff', letterSpacing: '-0.5px' }}>DistriApp</h2>
@@ -613,14 +539,10 @@ export default function App() {
         {/* Acciones de Derecha (Carrito y Usuario) */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginLeft: 'auto' }}>
           <button onClick={() => setCarritoAbierto(true)} style={{ background: '#10b981', border: 'none', color: '#fff', fontSize: '13px', padding: '10px 16px', borderRadius: '12px', display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 'bold', cursor: 'pointer', boxShadow: '0 4px 12px rgba(16,185,129,0.3)', whiteSpace: 'nowrap' }}>
-            🛒 Carrito {cantidadTotalItems() > 0 && <span style={{ background: '#fff', color: '#10b981', fontSize: '11px', padding: '2px 8px', borderRadius: '50px', fontWeight: '800' }}>{cantidadTotalItems()}</span>}
+            <ShoppingCart size={16} /> Carrito {cantidadTotalItems() > 0 && <span style={{ background: '#fff', color: '#10b981', fontSize: '11px', padding: '2px 8px', borderRadius: '50px', fontWeight: '800' }}>{cantidadTotalItems()}</span>}
           </button>
           
-          <UserMenuDropdown 
-            usuario={usuarioLogueado} 
-            onOpenChangePassword={() => setIsChangePasswordOpen(true)} 
-            onLogout={handleLogout} 
-          />
+          <UserMenuDropdown usuario={usuarioLogueado} onOpenChangePassword={() => setIsChangePasswordOpen(true)} onLogout={handleLogout} />
         </div>
 
         {/* Menú Desplegable Móvil */}
@@ -633,22 +555,10 @@ export default function App() {
         )}
       </header>
 
-      {/* Estilos para responsividad */}
-      <style>{`
-        @media (max-width: 900px) {
-          .desktop-nav { display: none !important; }
-          .mobile-menu-btn { display: flex !important; }
-        }
-      `}</style>
+      <style>{`@media (max-width: 900px) { .desktop-nav { display: none !important; } .mobile-menu-btn { display: flex !important; } }`}</style>
 
-      {/* MODAL CAMBIO DE CONTRASEÑA */}
-      <ChangePasswordModal 
-        isOpen={isChangePasswordOpen} 
-        onClose={() => setIsChangePasswordOpen(false)} 
-        usuarioId={usuarioLogueado?.id || 1} 
-      />
+      <ChangePasswordModal isOpen={isChangePasswordOpen} onClose={() => setIsChangePasswordOpen(false)} usuarioId={usuarioLogueado?.id || 1} />
 
-      {/* CONTENEDOR PRINCIPAL FLUIDO A ANCHO COMPLETO */}
       <main style={{ maxWidth: '1400px', margin: '0 auto', padding: '32px 24px', width: '100%' }}>
         {mensajePedido && <div className="animate-fade-in" style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', padding: '16px 20px', borderRadius: '14px', marginBottom: '30px', color: '#166534', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '10px', boxShadow: '0 2px 5px rgba(0,0,0,0.02)' }}><CheckCircle2 size={20} color="#16a34a" />{mensajePedido}</div>}
 
@@ -658,7 +568,7 @@ export default function App() {
             <div style={{ background: '#fff', padding: '24px 30px', borderRadius: '20px', border: '1px solid #e2e8f0', marginBottom: '25px', display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: '15px', boxShadow: '0 2px 4px rgba(0,0,0,0.02)' }}>
               <div>
                 <h2 style={{ color: '#0f172a', margin: '0 0 6px 0', fontSize: '24px', fontWeight: '800', letterSpacing: '-0.5px' }}>Catálogo de Productos</h2>
-                <p style={{ margin: '0', fontSize: '14px', color: '#64748b' }}>Selecciona los bultos y presiona "Agregar" para incorporarlos al pedido.</p>
+                <p style={{ margin: '0', fontSize: '14px', color: '#64748b' }}>Selecciona los productos y presiona "Agregar" para incorporarlos al pedido.</p>
               </div>
               <input type="text" value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="Buscar por nombre o SKU..." style={{ width: '320px', maxWidth: '100%', padding: '12px 16px', borderRadius: '12px', border: '1px solid #cbd5e1', fontSize: '14px', outline: 'none', background: '#f8fafc' }} />
             </div>
@@ -676,16 +586,9 @@ export default function App() {
                   const stockDisponibleReal = (prod.stock_disponible !== undefined) ? prod.stock_disponible : (prod.stock_fisico - (prod.stock_reservado || 0));
                   return (
                     <div key={prod.id} className="card-producto">
-                      
-                      {/* Contenedor de Imagen */}
                       <div style={{ width: '100%', height: '180px', backgroundColor: '#f8fafc', borderRadius: '16px', marginBottom: '16px', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid #e2e8f0' }}>
-                        <img 
-                          src={prod.imagen_url && prod.imagen_url !== 'default.png' ? prod.imagen_url : 'https://cdn-icons-png.flaticon.com/512/679/679720.png'} 
-                          alt={prod.nombre} 
-                          style={{ width: '100%', height: '100%', objectFit: 'contain', padding: '16px' }} 
-                        />
+                        <img src={prod.imagen_url && prod.imagen_url !== 'default.png' ? prod.imagen_url : 'https://cdn-icons-png.flaticon.com/512/679/679720.png'} alt={prod.nombre} style={{ width: '100%', height: '100%', objectFit: 'contain', padding: '16px' }} />
                       </div>
-
                       <div>
                         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
                           <span style={{ background: '#eff6ff', color: '#1e3a8a', border: '1px solid #dbeafe', padding: '4px 10px', borderRadius: '8px', fontSize: '12px', fontWeight: 'bold' }}>{prod.codigo}</span>
@@ -694,52 +597,22 @@ export default function App() {
                         <h4 style={{ margin: '8px 0 10px 0', fontSize: '16px', color: '#0f172a', fontWeight: '700', lineHeight: '1.4' }}>{prod.nombre}</h4>
                         <p style={{ fontSize: '22px', fontWeight: '800', color: '#1e3a8a', margin: '0 0 10px 0' }}>${prod.precio.toLocaleString('es-AR')}</p>
                       </div>
-
                       <div style={{ display: 'flex', gap: '10px', alignItems: 'center', borderTop: '1px solid #f1f5f9', paddingTop: '16px', marginTop: '10px' }}>
                         <div style={{ display: 'flex', alignItems: 'center', border: '1px solid #cbd5e1', borderRadius: '12px', background: '#f8fafc', overflow: 'hidden', width: '120px' }}>
-                          <button 
-                            onClick={() => cambiarCantidadTemp(prod.id, -1)} 
-                            style={{ background: 'none', border: 'none', padding: '10px 12px', cursor: 'pointer', fontWeight: 'bold', color: '#475569' }}
-                          >
-                            -
-                          </button>
-                          <input 
-                            type="number" 
-                            min="1"
-                            max={stockDisponibleReal}
-                            value={cantTemp === 0 ? '' : cantTemp} 
-                            onChange={(e) => {
-                              const val = parseInt(e.target.value);
-                              const nuevaCant = isNaN(val) ? 0 : val;
-                              
-                              if (nuevaCant > stockDisponibleReal) {
-                                alert(`Solo hay ${stockDisponibleReal} unidades disponibles de este producto.`);
-                                setCantidadesTemp({ ...cantidadesTemp, [prod.id]: stockDisponibleReal });
-                              } else {
-                                setCantidadesTemp({ ...cantidadesTemp, [prod.id]: nuevaCant });
-                              }
-                            }}
-                            style={{ 
-                              width: '40px', 
-                              textAlign: 'center', 
-                              border: 'none', 
-                              background: 'transparent', 
-                              fontSize: '14px', 
-                              fontWeight: 'bold', 
-                              color: '#0f172a',
-                              outline: 'none',
-                              padding: 0
-                            }} 
-                            placeholder="0"
-                          />
-                          <button 
-                            onClick={() => cambiarCantidadTemp(prod.id, 1)} 
-                            style={{ background: 'none', border: 'none', padding: '10px 12px', cursor: 'pointer', fontWeight: 'bold', color: '#475569' }}
-                          >
-                            +
-                          </button>
+                          <button onClick={() => cambiarCantidadTemp(prod.id, -1)} style={{ background: 'none', border: 'none', padding: '10px 12px', cursor: 'pointer', fontWeight: 'bold', color: '#475569' }}>-</button>
+                          <input type="number" min="1" max={stockDisponibleReal} value={cantTemp === 0 ? '' : cantTemp} onChange={(e) => {
+                            const val = parseInt(e.target.value);
+                            const nuevaCant = isNaN(val) ? 0 : val;
+                            if (nuevaCant > stockDisponibleReal) {
+                              alert(`Solo hay ${stockDisponibleReal} unidades disponibles de este producto.`);
+                              setCantidadesTemp({ ...cantidadesTemp, [prod.id]: stockDisponibleReal });
+                            } else {
+                              setCantidadesTemp({ ...cantidadesTemp, [prod.id]: nuevaCant });
+                            }
+                          }} style={{ width: '40px', textAlign: 'center', border: 'none', background: 'transparent', fontSize: '14px', fontWeight: 'bold', color: '#0f172a', outline: 'none', padding: 0 }} placeholder="0" />
+                          <button onClick={() => cambiarCantidadTemp(prod.id, 1)} style={{ background: 'none', border: 'none', padding: '10px 12px', cursor: 'pointer', fontWeight: 'bold', color: '#475569' }}>+</button>
                         </div>
-                        <button onClick={() => agregarAlCarritoDesdeCatalogo(prod.id)} className="btn-primary" style={{ flex: 1, padding: '12px' }}>🛒 Agregar</button>
+                        <button onClick={() => agregarAlCarritoDesdeCatalogo(prod.id)} className="btn-primary" style={{ flex: 1, padding: '12px' }}>Agregar</button>
                       </div>
                     </div>
                   );
@@ -829,44 +702,55 @@ export default function App() {
           </div>
         )}
 
-        {/* VISTA 3: HISTORIAL DE PEDIDOS */}
+        {/* VISTA 3: HISTORIAL DE PEDIDOS AGRUPADO POR FECHA */}
         {vistaActual === 'historial' && (
           <div>
             <div style={{ background: '#fff', padding: '24px 30px', borderRadius: '20px', border: '1px solid #e2e8f0', marginBottom: '25px' }}>
               <h2 style={{ color: '#0f172a', margin: '0 0 4px 0', fontSize: '24px', fontWeight: '800' }}>Historial de Órdenes & PDFs</h2>
-              <p style={{ margin: '0', fontSize: '14px', color: '#64748b' }}>Listado cronológico de pedidos generados en el sistema.</p>
+              <p style={{ margin: '0', fontSize: '14px', color: '#64748b' }}>Pedidos agrupados por fecha de entrega programada.</p>
             </div>
 
             {pedidos.length === 0 ? <p style={{ textAlign: 'center', padding: '60px', color: '#64748b', fontSize: '16px' }}>No hay pedidos registrados.</p> : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                {pedidos.map(ped => (
-                  <div key={ped.id} className="card-producto" style={{ padding: '20px 26px', flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '15px' }}>
-                    <div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '6px' }}>
-                        <h4 style={{ margin: '0', color: '#1e3a8a', fontSize: '18px', fontWeight: '700' }}>Orden #{ped.id} - {ped.razon_social || 'Cliente General'}</h4>
-                        <span style={{ background: '#eff6ff', color: '#1d4ed8', border: '1px solid #dbeafe', padding: '4px 10px', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold' }}>
-                          {ped.estado_cliente || ped.estado}
-                        </span>
-                      </div>
-                      <p style={{ margin: '3px 0', fontSize: '14px', color: '#64748b' }}>📅 Fecha: {ped.fecha}</p>
-                      <p style={{ margin: '3px 0', fontSize: '14px', color: '#475569' }}>📝 Obs: {ped.observaciones_agente || 'Ninguna'}</p>
-                    </div>
-                    <div style={{ textAlign: 'right', display: 'flex', alignItems: 'center', gap: '15px' }}>
-                      
-                      <button onClick={() => abrirSeguimiento(ped)} className="btn-secondary" style={{ padding: '10px 16px', fontSize: '13px' }}>🕒 Seguimiento</button>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '30px' }}>
+                {fechasOrdenadas.map(fecha => (
+                  <div key={fecha}>
+                    {/* Encabezado del grupo de fecha */}
+                    <h3 style={{ fontSize: '18px', fontWeight: 'bold', color: '#1e3a8a', marginBottom: '16px', paddingBottom: '8px', borderBottom: '2px solid #e2e8f0' }}>
+                      📅 Entrega: {fecha === 'Sin fecha asignada' ? 'Sin fecha asignada' : new Date(fecha + 'T00:00:00').toLocaleDateString('es-AR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+                    </h3>
+                    
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                      {pedidosAgrupados[fecha].map(ped => (
+                        <div key={ped.id} className="card-producto" style={{ padding: '20px 26px', flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '15px' }}>
+                          <div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '6px' }}>
+                              <h4 style={{ margin: '0', color: '#1e3a8a', fontSize: '18px', fontWeight: '700' }}>Orden #{ped.id} - {ped.razon_social || 'Cliente General'}</h4>
+                              <span style={{ background: '#eff6ff', color: '#1d4ed8', border: '1px solid #dbeafe', padding: '4px 10px', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold' }}>
+                                {ped.estado_cliente || ped.estado}
+                              </span>
+                            </div>
+                            <p style={{ margin: '3px 0', fontSize: '14px', color: '#64748b' }}>📅 Fecha de creación: {ped.fecha}</p>
+                            <p style={{ margin: '3px 0', fontSize: '14px', color: '#475569' }}>📝 Obs: {ped.observaciones_agente || 'Ninguna'}</p>
+                          </div>
+                          <div style={{ textAlign: 'right', display: 'flex', alignItems: 'center', gap: '15px' }}>
+                            
+                            <button onClick={() => abrirSeguimiento(ped)} className="btn-secondary" style={{ padding: '10px 16px', fontSize: '13px' }}>🕒 Seguimiento</button>
 
-                      {usuarioLogueado?.rol === 'admin' && ped.estado === 'RECIBIDO' && (
-                        <button onClick={() => avanzarEstadoPedido(ped.id, 'VALIDADO')} className="btn-primary" style={{ background: '#16a34a', boxShadow: '0 4px 10px rgba(22,163,74,0.2)', padding: '10px 16px', fontSize: '13px' }}>⚡ Avanzar (Validar)</button>
-                      )}
-                      {usuarioLogueado?.rol === 'admin' && ped.estado === 'VALIDADO' && (
-                        <button onClick={() => avanzarEstadoPedido(ped.id, 'PREPARADO')} className="btn-primary" style={{ padding: '10px 16px', fontSize: '13px' }}>📦 Avanzar (Preparar)</button>
-                      )}
+                            {usuarioLogueado?.rol === 'admin' && ped.estado === 'RECIBIDO' && (
+                              <button onClick={() => avanzarEstadoPedido(ped.id, 'VALIDADO')} className="btn-primary" style={{ background: '#16a34a', boxShadow: '0 4px 10px rgba(22,163,74,0.2)', padding: '10px 16px', fontSize: '13px' }}>⚡ Avanzar (Validar)</button>
+                            )}
+                            {usuarioLogueado?.rol === 'admin' && ped.estado === 'VALIDADO' && (
+                              <button onClick={() => avanzarEstadoPedido(ped.id, 'PREPARADO')} className="btn-primary" style={{ padding: '10px 16px', fontSize: '13px' }}>📦 Avanzar (Preparar)</button>
+                            )}
 
-                      <div>
-                        <span style={{ fontSize: '12px', color: '#64748b', display: 'block' }}>Total</span>
-                        <span style={{ fontSize: '20px', fontWeight: '800', color: '#1e3a8a' }}>${ped.total.toLocaleString('es-AR')}</span>
-                      </div>
-                      <a href={`http://localhost:8001/documentos_pedidos/orden_pedido_${ped.id}.pdf`} target="_blank" rel="noopener noreferrer" style={{ background: '#dc2626', color: '#fff', padding: '10px 20px', borderRadius: '12px', fontSize: '13px', fontWeight: 'bold', textDecoration: 'none', boxShadow: '0 4px 10px rgba(220,38,38,0.2)' }}>📄 PDF</a>
+                            <div>
+                              <span style={{ fontSize: '12px', color: '#64748b', display: 'block' }}>Total</span>
+                              <span style={{ fontSize: '20px', fontWeight: '800', color: '#1e3a8a' }}>${ped.total.toLocaleString('es-AR')}</span>
+                            </div>
+                            <a href={`http://localhost:8001/documentos_pedidos/orden_pedido_${ped.id}.pdf`} target="_blank" rel="noopener noreferrer" style={{ background: '#dc2626', color: '#fff', padding: '10px 20px', borderRadius: '12px', fontSize: '13px', fontWeight: 'bold', textDecoration: 'none', boxShadow: '0 4px 10px rgba(220,38,38,0.2)' }}>📄 PDF</a>
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 ))}
@@ -879,11 +763,7 @@ export default function App() {
       {/* PANEL LATERAL CARRITO CON ESTRUCTURA RIGIDA Y SCROLL INTERNO */}
       {carritoAbierto && (
         <div style={{ position: 'fixed', inset: 0, zIndex: 2000, display: 'flex' }}>
-          <div 
-            onClick={() => setCarritoAbierto(false)} 
-            className="animate-fade-in"
-            style={{ position: 'absolute', inset: 0, background: 'rgba(15, 23, 42, 0.6)', backdropFilter: 'blur(4px)' }} 
-          />
+          <div onClick={() => setCarritoAbierto(false)} className="animate-fade-in" style={{ position: 'absolute', inset: 0, background: 'rgba(15, 23, 42, 0.6)', backdropFilter: 'blur(4px)' }} />
 
           <div className="animate-slide-in-right" style={{ position: 'relative', marginLeft: 'auto', width: '480px', maxWidth: '100%', height: '100vh', maxHeight: '100vh', background: '#f8fafc', boxShadow: '-15px 0 40px rgba(0,0,0,0.2)', display: 'flex', flexDirection: 'column', boxSizing: 'border-box', zIndex: 2010, overflow: 'hidden' }}>
             
@@ -980,6 +860,11 @@ export default function App() {
                     </div>
                   </div>
                 </div>
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#475569', marginBottom: '6px', textTransform: 'uppercase' }}>Fecha de Entrega (opcional)</label>
+                <input type="date" value={fechaEntrega} onChange={(e) => setFechaEntrega(e.target.value)} style={{ background: '#f8fafc', color: '#0f172a' }} />
               </div>
 
               <div>

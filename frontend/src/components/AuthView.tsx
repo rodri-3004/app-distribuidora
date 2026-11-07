@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Bot, Mail, Lock, ArrowRight, CheckCircle2, AlertCircle, KeyRound, ShieldCheck } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Mail, Lock, ArrowRight, Sparkles, CheckCircle2, AlertCircle, KeyRound, ShieldCheck, Truck } from 'lucide-react';
 
 const API_URL = 'http://localhost:8001';
 
@@ -27,6 +27,12 @@ export const AuthView: React.FC<AuthViewProps> = ({ onLoginSuccess }) => {
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+
+  // Limpia los mensajes de error/éxito al cambiar de modo
+  useEffect(() => {
+    setErrorMsg(null);
+    setSuccessMsg(null);
+  }, [mode]);
 
   // Función para limpiar campos de registro
   const limpiarFormularioRegistro = () => {
@@ -214,7 +220,6 @@ export const AuthView: React.FC<AuthViewProps> = ({ onLoginSuccess }) => {
        <div style={{
         position: 'absolute',
         inset: 0,
-        // Cambiamos la URL por una de un servidor más permisivo
         backgroundImage: 'url("https://images.pexels.com/photos/4481326/pexels-photo-4481326.jpeg?auto=compress&cs=tinysrgb&w=1920")',
         backgroundSize: 'cover',
         backgroundPosition: 'center',
@@ -239,11 +244,14 @@ export const AuthView: React.FC<AuthViewProps> = ({ onLoginSuccess }) => {
         
         {/* Encabezado */}
         <div style={{ textAlign: 'center', marginBottom: '25px' }}>
-          <div style={{ width: '55px', height: '55px', background: '#eff6ff', color: '#1e3a8a', borderRadius: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 12px auto', boxShadow: '0 4px 10px rgba(37,99,235,0.1)' }}>
-            <Bot size={28} />
+          <div style={{ background: '#3b82f6', width: '55px', height: '55px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '16px', margin: '0 auto 12px auto', boxShadow: '0 4px 10px rgba(59,130,246,0.3)' }}>
+            <Truck size={32} color="#fff" />
           </div>
-          <h2 style={{ margin: '0', color: '#0f172a', fontSize: '22px', fontWeight: '800' }}>DistriApp <span style={{ color: '#2563eb' }}>Comercial</span></h2>
-          <p style={{ margin: '4px 0 0 0', fontSize: '13px', color: '#64748b' }}>Portal B2B de Distribución y Gestión</p>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', marginBottom: '4px' }}>
+            <h2 style={{ margin: 0, fontSize: '24px', fontWeight: '800', color: '#0f172a', letterSpacing: '-0.5px' }}>DistriApp</h2>
+            <span style={{ background: '#e2e8f0', color: '#475569', padding: '2px 6px', borderRadius: '6px', fontSize: '10px', fontWeight: 'bold' }}>PWA</span>
+          </div>
+          <p style={{ margin: 0, fontSize: '12px', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Preventa & Pedidos</p>
         </div>
 
         {/* Alertas */}
@@ -344,7 +352,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onLoginSuccess }) => {
             </div>
 
             <button type="submit" disabled={loading} style={{ padding: '12px', background: 'linear-gradient(135deg, #1e3a8a 0%, #2563eb 100%)', color: '#fff', border: 'none', borderRadius: '10px', fontWeight: 'bold', fontSize: '14px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', marginTop: '5px' }}>
-              {loading ? 'Registrando...' : 'Completar Registro'}
+              {loading ? 'Registrando...' : 'Completar Registro'} <Sparkles size={16} color="#fde047" />
             </button>
 
             <div style={{ textAlign: 'center', marginTop: '10px', fontSize: '13px', color: '#64748b' }}>
