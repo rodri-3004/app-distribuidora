@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Bot, Mail, Lock, ArrowRight, Sparkles, CheckCircle2, AlertCircle, KeyRound, ShieldCheck } from 'lucide-react';
+import { Bot, Mail, Lock, ArrowRight, CheckCircle2, AlertCircle, KeyRound, ShieldCheck } from 'lucide-react';
 
 const API_URL = 'http://localhost:8001';
 
@@ -54,7 +54,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onLoginSuccess }) => {
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || 'Error al iniciar sesión');
 
-      // ¡AQUÍ GUARDAMOS EL TOKEN EN EL NAVEGADOR!
+      // Guardar token
       if (data.access_token) {
         localStorage.setItem('token', data.access_token);
       }
@@ -160,7 +160,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onLoginSuccess }) => {
     }
   };
 
-  // 5. Restablecer Contraseña (Doble Input)
+  // 5. Restablecer Contraseña
   const handleResetPassword = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
@@ -201,12 +201,45 @@ export const AuthView: React.FC<AuthViewProps> = ({ onLoginSuccess }) => {
   };
 
   return (
-    <div style={{ minHeight: '100vh', background: '#f8fafc', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }}>
-      <div style={{ width: '100%', maxWidth: '440px', background: '#ffffff', borderRadius: '24px', boxShadow: '0 10px 30px rgba(0,0,0,0.08)', border: '1px solid #e2e8f0', padding: '35px' }}>
+    <div style={{ 
+      minHeight: '100vh', 
+      position: 'relative',
+      display: 'flex', 
+      alignItems: 'center', 
+      justifyContent: 'center', 
+      padding: '20px',
+      overflow: 'hidden'
+    }}>
+      {/* FONDO DE IMAGEN DIFUMINADO */}
+       <div style={{
+        position: 'absolute',
+        inset: 0,
+        // Cambiamos la URL por una de un servidor más permisivo
+        backgroundImage: 'url("https://images.pexels.com/photos/4481326/pexels-photo-4481326.jpeg?auto=compress&cs=tinysrgb&w=1920")',
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+        filter: 'blur(8px) brightness(0.5) sepia(20%) hue-rotate(190deg) saturate(150%)',
+        transform: 'scale(1.05)',
+        zIndex: 0
+      }}></div>
+
+      {/* TARJETA DEL FORMULARIO */}
+      <div style={{ 
+        position: 'relative',
+        zIndex: 1,
+        width: '100%', 
+        maxWidth: '640px', 
+        background: 'rgba(255, 255, 255, 0.9)', // Blanco con un toque de transparencia
+        backdropFilter: 'blur(10px)', // Efecto cristal
+        borderRadius: '24px', 
+        boxShadow: '0 25px 50px -12px rgba(0,0,0,0.3)', 
+        border: '1px solid rgba(255, 255, 255, 0.2)', 
+        padding: '35px' 
+      }}>
         
         {/* Encabezado */}
         <div style={{ textAlign: 'center', marginBottom: '25px' }}>
-          <div style={{ width: '55px', height: '55px', background: '#eff6ff', color: '#1e3a8a', borderRadius: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 12px auto' }}>
+          <div style={{ width: '55px', height: '55px', background: '#eff6ff', color: '#1e3a8a', borderRadius: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 12px auto', boxShadow: '0 4px 10px rgba(37,99,235,0.1)' }}>
             <Bot size={28} />
           </div>
           <h2 style={{ margin: '0', color: '#0f172a', fontSize: '22px', fontWeight: '800' }}>DistriApp <span style={{ color: '#2563eb' }}>Comercial</span></h2>
@@ -263,7 +296,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onLoginSuccess }) => {
               </div>
             </div>
 
-            <button type="submit" disabled={loading} style={{ padding: '12px', background: '#1e3a8a', color: '#fff', border: 'none', borderRadius: '10px', fontWeight: 'bold', fontSize: '14px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', marginTop: '5px' }}>
+            <button type="submit" disabled={loading} style={{ padding: '12px', background: 'linear-gradient(135deg, #1e3a8a 0%, #2563eb 100%)', color: '#fff', border: 'none', borderRadius: '10px', fontWeight: 'bold', fontSize: '14px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', marginTop: '5px' }}>
               {loading ? 'Iniciando sesión...' : 'Iniciar Sesión'} <ArrowRight size={16} />
             </button>
 
@@ -310,8 +343,8 @@ export const AuthView: React.FC<AuthViewProps> = ({ onLoginSuccess }) => {
               <input type="password" required value={confirmarClave} onChange={(e) => setConfirmarClave(e.target.value)} placeholder="Repite tu contraseña" style={{ width: '100%', boxSizing: 'border-box' }} />
             </div>
 
-            <button type="submit" disabled={loading} style={{ padding: '12px', background: '#1e3a8a', color: '#fff', border: 'none', borderRadius: '10px', fontWeight: 'bold', fontSize: '14px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', marginTop: '5px' }}>
-              {loading ? 'Registrando...' : 'Completar Registro'} <Sparkles size={16} color="#fde047" />
+            <button type="submit" disabled={loading} style={{ padding: '12px', background: 'linear-gradient(135deg, #1e3a8a 0%, #2563eb 100%)', color: '#fff', border: 'none', borderRadius: '10px', fontWeight: 'bold', fontSize: '14px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', marginTop: '5px' }}>
+              {loading ? 'Registrando...' : 'Completar Registro'}
             </button>
 
             <div style={{ textAlign: 'center', marginTop: '10px', fontSize: '13px', color: '#64748b' }}>
@@ -378,7 +411,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onLoginSuccess }) => {
           </form>
         )}
 
-        {/* MODO: RESETEAR CONTRASEÑA (DOBLE INPUT) */}
+        {/* MODO: RESETEAR CONTRASEÑA */}
         {mode === 'reset' && (
           <form onSubmit={handleResetPassword} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <div style={{ textAlign: 'center', color: '#475569', fontSize: '13px', marginBottom: '5px' }}>

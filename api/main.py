@@ -25,8 +25,8 @@ from reportlab.lib import colors
 
 app = FastAPI(
     title="API Distribuidora de Limpieza",
-    version="1.36",
-    description="API B2B con Modelo Profesional de Stock y Seguridad JWT."
+    version="1.40",
+    description="API B2B con Modelo Profesional de Stock, Seguridad JWT, Trazabilidad y Alertas."
 )
 
 app.add_middleware(
@@ -69,14 +69,35 @@ def asegurar_esquema(cursor):
     col_pedidos = [col["name"] for col in cursor.fetchall()]
     if "usuario_id" not in col_pedidos:
         cursor.execute("ALTER TABLE pedidos ADD COLUMN usuario_id INTEGER DEFAULT 1")
+    if "estado_anterior" not in col_pedidos:
+        cursor.execute("ALTER TABLE pedidos ADD COLUMN estado_anterior TEXT")
 
     cursor.execute("PRAGMA table_info(productos)")
     col_productos = [col["name"] for col in cursor.fetchall()]
     if "stock_reservado" not in col_productos:
         cursor.execute("ALTER TABLE productos ADD COLUMN stock_reservado INTEGER DEFAULT 0")
+    if "imagen_url" not in col_productos:
+        cursor.execute("ALTER TABLE productos ADD COLUMN imagen_url TEXT DEFAULT 'default.png'")
 
 def generar_hash(clave: str) -> str:
     return hashlib.sha256(clave.encode('utf-8')).hexdigest()
+
+# ==========================================
+# TRADUCCIÓN DE ESTADOS
+# ==========================================
+ESTADOS_CLIENTE = {
+    "RECIBIDO": "Pendiente",
+    "VALIDADO": "En preparación",
+    "PREPARADO": "En preparación",
+    "FACTURADO": "En preparación",
+    "ARMADO": "Preparado para despachar",
+    "CARGADO": "Preparado para despachar",
+    "EN_REPARTO": "Pedido en camino",
+    "ENTREGADO": "Pedido entregado",
+    "CERRADO": "Pedido entregado",
+    "EXCEPCION": "En revisión",
+    "CANCELADO": "Cancelado"
+}
 
 # ==========================================
 # SEGURIDAD: CONTRASEÑAS (bcrypt) Y SESIÓN (token JWT)
@@ -182,8 +203,37 @@ class PedidoCreate(BaseModel):
     cliente_id: Optional[int] = None
     datos_cliente: Optional[ClienteModel] = None
     observaciones_agente: Optional[str] = None
-    usuario_id: Optional[int] = 1  # Se ignora en el backend, se toma del token
+    usuario_id: Optional[int] = 1
     items: List[DetalleItem]
+
+class CambioEstadoModel(BaseModel):
+    nuevo_estado: str
+
+
+# ==========================================
+# ALERTAS DE STOCK MÍNIMO
+# ==========================================
+def verificar_alerta_stock(cursor, producto_id: int):
+    """
+    Revisa si el producto bajó del umbral (50 unidades).
+    Si es así, y no hay una alerta PENDIENTE para ese producto, la crea.
+    """
+    UMBRAL_MINIMO = 50
+    cursor.execute("SELECT id, nombre, stock_fisico, stock_reservado FROM productos WHERE id = ?", (producto_id,))
+    prod = cursor.fetchone()
+    if not prod:
+        return
+
+    stock_disponible = prod["stock_fisico"] - prod["stock_reservado"]
+    
+    if stock_disponible <= UMBRAL_MINIMO:
+        # Verificamos si ya hay una alerta pendiente para no duplicar
+        cursor.execute("SELECT id FROM alertas_stock WHERE producto_id = ? AND estado = 'PENDIENTE'", (producto_id,))
+        if not cursor.fetchone():
+            cursor.execute("""
+                INSERT INTO alertas_stock (producto_id, stock_actual, estado)
+                VALUES (?, ?, 'PENDIENTE')
+            """, (producto_id, stock_disponible))
 
 
 # ==========================================
@@ -226,7 +276,7 @@ def registrar_usuario(datos: UsuarioRegistro):
     finally:
         conexion.close()
 
-@app.post("/activar", summary="Activar cuenta mediante token simulado")
+@app.post("/activar", summary="Activar cuenta")
 def activar_cuenta(email: EmailStr, token: str):
     conexion = obtener_conexion()
     cursor = conexion.cursor()
@@ -247,7 +297,7 @@ def activar_cuenta(email: EmailStr, token: str):
     conexion.close()
     return {"mensaje": "¡Cuenta activada con éxito! Ya puede iniciar sesión."}
 
-@app.post("/login", summary="Iniciar sesión: devuelve la identidad y un token de sesión")
+@app.post("/login", summary="Iniciar sesión")
 def login_usuario(datos: UsuarioLogin):
     conexion = obtener_conexion()
     cursor = conexion.cursor()
@@ -287,11 +337,11 @@ def login_usuario(datos: UsuarioLogin):
         }
     }
 
-@app.get("/yo", summary="Devuelve el usuario de la sesión actual")
+@app.get("/yo", summary="Devuelve el usuario actual")
 def quien_soy(usuario: dict = Depends(usuario_actual)):
     return usuario
 
-@app.post("/recuperar-password", summary="Solicitar recuperación de contraseña")
+@app.post("/recuperar-password", summary="Solicitar recuperación")
 def recuperar_password(datos: RecuperarPasswordModel):
     conexion = obtener_conexion()
     cursor = conexion.cursor()
@@ -307,14 +357,14 @@ def recuperar_password(datos: RecuperarPasswordModel):
     conexion.commit()
     conexion.close()
     
-    return {"mensaje": "Correo de recuperación enviado.", "token_debug": token_recuperacion}
+    return {"mensaje": "Correo enviado.", "token_debug": token_recuperacion}
 
-@app.post("/resetear-password", summary="Restablecer nueva contraseña")
+@app.post("/resetear-password", summary="Restablecer contraseña")
 def resetear_password(datos: ResetPasswordModel):
     if datos.nueva_clave != datos.confirmar_nueva_clave:
         raise HTTPException(status_code=400, detail="Las nuevas contraseñas no coinciden.")
     if not validar_clave_segura(datos.nueva_clave):
-        raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 8 caracteres, letras y números.")
+        raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 8 caracteres.")
 
     conexion = obtener_conexion()
     cursor = conexion.cursor()
@@ -332,15 +382,15 @@ def resetear_password(datos: ResetPasswordModel):
     return {"mensaje": "Contraseña actualizada con éxito."}
 
 @app.post("/cambiar-password", summary="Cambiar contraseña")
-def cambiar_password(datos: CambiarPasswordModel):
+def cambiar_password(datos: CambiarPasswordModel, usuario_sesion: dict = Depends(usuario_actual)):
     if datos.nueva_clave != datos.confirmar_nueva_clave:
         raise HTTPException(status_code=400, detail="Las nuevas contraseñas no coinciden.")
     if not validar_clave_segura(datos.nueva_clave):
-        raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 8 caracteres, letras y números.")
+        raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 8 caracteres.")
 
     conexion = obtener_conexion()
     cursor = conexion.cursor()
-    cursor.execute("SELECT id, clave_hash FROM usuarios WHERE id = ?", (datos.usuario_id,))
+    cursor.execute("SELECT id, clave_hash FROM usuarios WHERE id = ?", (usuario_sesion["id"],))
     usuario = cursor.fetchone()
 
     if not usuario or not usuario["clave_hash"] or not verificar_clave(datos.clave_actual, usuario["clave_hash"]):
@@ -348,7 +398,7 @@ def cambiar_password(datos: CambiarPasswordModel):
         raise HTTPException(status_code=401, detail="La contraseña actual es incorrecta.")
     
     nuevo_hash = hashear_clave(datos.nueva_clave)
-    cursor.execute("UPDATE usuarios SET clave_hash = ? WHERE id = ?", (nuevo_hash, datos.usuario_id))
+    cursor.execute("UPDATE usuarios SET clave_hash = ? WHERE id = ?", (nuevo_hash, usuario_sesion["id"]))
     conexion.commit()
     conexion.close()
     return {"mensaje": "Contraseña actualizada con éxito."}
@@ -369,7 +419,7 @@ def listar_productos():
     conexion.close()
     return productos
 
-@app.get("/categorias", summary="Listar categorías del catálogo global")
+@app.get("/categorias", summary="Listar categorías")
 def listar_categorias():
     conexion = obtener_conexion()
     cursor = conexion.cursor()
@@ -413,7 +463,7 @@ async def importar_productos_excel(file: UploadFile = File(...), usuario: dict =
 # CLIENTES (PROTEGIDOS POR TOKEN)
 # ==========================================
 
-@app.get("/clientes", summary="Listar clientes exclusivos de la sesión del usuario")
+@app.get("/clientes", summary="Listar clientes exclusivos de la sesión")
 def listar_clientes(usuario_sesion: dict = Depends(usuario_actual)):
     conexion = obtener_conexion()
     cursor = conexion.cursor()
@@ -443,7 +493,7 @@ def listar_clientes(usuario_sesion: dict = Depends(usuario_actual)):
         conexion.close()
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/clientes", summary="Crear nuevo cliente vinculado a la sesión activa")
+@app.post("/clientes", summary="Crear nuevo cliente")
 def crear_cliente(c: ClienteModel, usuario_sesion: dict = Depends(usuario_actual)):
     conexion = obtener_conexion()
     cursor = conexion.cursor()
@@ -507,7 +557,6 @@ def actualizar_cliente(cliente_id: int, c: ClienteModel, usuario_sesion: dict = 
     cursor = conexion.cursor()
     try:
         asegurar_esquema(cursor)
-        # Mantenemos el dueño original para no romper la cartera
         cursor.execute("SELECT usuario_dueno FROM clientes WHERE id = ?", (cliente_id,))
         dueno_row = cursor.fetchone()
         dueno = dueno_row["usuario_dueno"] if dueno_row else c.usuario_dueno
@@ -541,7 +590,7 @@ def eliminar_cliente(cliente_id: int, usuario_sesion: dict = Depends(usuario_act
 
 
 # ==========================================
-# PEDIDOS (PROTEGIDOS POR TOKEN)
+# PEDIDOS (PROTEGIDOS POR TOKEN Y CON TRAZABILIDAD)
 # ==========================================
 
 @app.post("/pedidos", summary="Crear pedido incrementando stock reservado")
@@ -606,7 +655,6 @@ def crear_pedido(pedido: PedidoCreate, usuario_sesion: dict = Depends(usuario_ac
 
         fecha_actual = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
-        # Usamos el ID del token, NO el del frontend
         cursor.execute("""
             INSERT INTO pedidos (cliente_id, fecha, estado, total, observaciones_agente, usuario_id)
             VALUES (?, ?, 'RECIBIDO', ?, ?, ?)
@@ -626,53 +674,66 @@ def crear_pedido(pedido: PedidoCreate, usuario_sesion: dict = Depends(usuario_ac
             """, (det["cantidad"], det["producto_id"], det["cantidad"]))
             if cursor.rowcount == 0:
                 raise HTTPException(status_code=400, detail="El stock se agotó mientras se procesaba el pedido. Intente de nuevo.")
+            
+            # Verificar alerta silenciosa de stock
+            verificar_alerta_stock(cursor, det["producto_id"])
 
         nuevo_saldo = cliente.get("saldo_actual", 0.0) + total_pedido
         cursor.execute("UPDATE clientes SET saldo_actual = ? WHERE id = ?", (nuevo_saldo, cliente_id))
         conexion.commit()
 
-        # Generación del PDF oficial con ReportLab
+        # Generación del PDF oficial con ReportLab (MINIMALISTA)
         nombre_archivo_pdf = f"orden_pedido_{pedido_id}.pdf"
         ruta_pdf = CARPETA_PDFS / nombre_archivo_pdf
 
-        doc = SimpleDocTemplate(str(ruta_pdf), pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
+        doc = SimpleDocTemplate(str(ruta_pdf), pagesize=letter, rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40)
         elementos = []
         estilos = getSampleStyleSheet()
 
-        color_primario = colors.HexColor('#1e40af')
-        color_fondo_tarjeta = colors.HexColor('#f8fafc')
+        color_primario = colors.HexColor('#1e3a8a')
+        color_texto = colors.HexColor('#334155')
+        color_fondo = colors.HexColor('#f8fafc')
         color_borde = colors.HexColor('#e2e8f0')
 
         estilo_titulo = estilos['Heading1']
         estilo_titulo.textColor = color_primario
-        estilo_titulo.fontSize = 20
-        estilo_titulo.leading = 24
+        estilo_titulo.fontSize = 24
+        estilo_titulo.leading = 28
+        estilo_titulo.alignment = 0
 
-        elementos.append(Paragraph("<b>DistriApp Comercial</b>", estilo_titulo))
-        elementos.append(Paragraph("<font color='#64748b' size=10>Portal B2B • Orden Oficial de Preventa y Logística</font>", estilos['Normal']))
-        elementos.append(Spacer(1, 12))
+        estilo_subtitulo = estilos['Normal']
+        estilo_subtitulo.textColor = colors.HexColor('#64748b')
+        estilo_subtitulo.fontSize = 10
+
+        elementos.append(Paragraph("<b>DistriApp</b>", estilo_titulo))
+        elementos.append(Paragraph("Portal B2B • Orden Oficial de Preventa", estilo_subtitulo))
+        elementos.append(Spacer(1, 20))
 
         dir_cliente = cliente.get('direccion') or cliente.get('direccion_entrega') or 'N/D'
         cond_fiscal_cli = cliente.get('condicion_fiscal') or 'Responsable Inscripto'
         
         info_data = [
-            [Paragraph(f"<b>Nº de Orden:</b> <font color='#1e40af'>#{pedido_id}</font>", estilos['Normal']), Paragraph(f"<b>Fecha de Emisión:</b> {fecha_actual}", estilos['Normal'])],
-            [Paragraph(f"<b>Cliente / Razón Social:</b> {cliente.get('razon_social', 'N/D')}", estilos['Normal']), Paragraph(f"<b>CUIT / Identificación:</b> {cliente.get('cuit', 'N/D')}", estilos['Normal'])],
-            [Paragraph(f"<b>Dirección de Destino:</b> {dir_cliente}", estilos['Normal']), Paragraph(f"<b>Condición Fiscal:</b> {cond_fiscal_cli}", estilos['Normal'])]
+            [Paragraph(f"<font color='#64748b' size=9><b>Nº DE ORDEN</b></font><br/><font size=12 color='#0f172a'><b>#{pedido_id}</b></font>", estilos['Normal']), 
+             Paragraph(f"<font color='#64748b' size=9><b>FECHA DE EMISIÓN</b></font><br/><font size=12 color='#0f172a'><b>{fecha_actual}</b></font>", estilos['Normal'])],
+            [Paragraph(f"<font color='#64748b' size=9><b>CLIENTE</b></font><br/><font size=11 color='#0f172a'><b>{cliente.get('razon_social', 'N/D')}</b></font>", estilos['Normal']), 
+             Paragraph(f"<font color='#64748b' size=9><b>CUIT</b></font><br/><font size=11 color='#0f172a'><b>{cliente.get('cuit', 'N/D')}</b></font>", estilos['Normal'])],
+            [Paragraph(f"<font color='#64748b' size=9><b>DIRECCIÓN</b></font><br/><font size=10 color='#0f172a'>{dir_cliente}</font>", estilos['Normal']), 
+             Paragraph(f"<font color='#64748b' size=9><b>COND. FISCAL</b></font><br/><font size=10 color='#0f172a'>{cond_fiscal_cli}</font>", estilos['Normal'])]
         ]
-        t_info = Table(info_data, colWidths=[270, 270])
+        
+        t_info = Table(info_data, colWidths=[260, 260])
         t_info.setStyle(TableStyle([
-            ('BACKGROUND', (0,0), (-1,-1), color_fondo_tarjeta),
-            ('PADDING', (0,0), (-1,-1), 10),
-            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ('BACKGROUND', (0,0), (-1,-1), color_fondo),
+            ('PADDING', (0,0), (-1,-1), 12),
+            ('VALIGN', (0,0), (-1,-1), 'TOP'),
             ('BOX', (0,0), (-1,-1), 1, color_borde),
-            ('INNERGRID', (0,0), (-1,-1), 0.5, color_borde),
+            ('INNERGRID', (0,0), (-1,-1), 1, colors.white),
         ]))
         elementos.append(t_info)
-        elementos.append(Spacer(1, 15))
+        elementos.append(Spacer(1, 30))
 
-        tabla_items = [["SKU / Código", "Descripción del Producto", "Cant.", "Precio Unit.", "Subtotal"]] + items_pdf_data
-        t_items = Table(tabla_items, colWidths=[80, 240, 50, 85, 85])
+        tabla_items = [["SKU", "Descripción del Producto", "Cant.", "Precio Unit.", "Subtotal"]] + items_pdf_data
+        t_items = Table(tabla_items, colWidths=[70, 240, 50, 80, 80])
         t_items.setStyle(TableStyle([
             ('BACKGROUND', (0,0), (-1,0), color_primario),
             ('TEXTCOLOR', (0,0), (-1,0), colors.white),
@@ -680,35 +741,35 @@ def crear_pedido(pedido: PedidoCreate, usuario_sesion: dict = Depends(usuario_ac
             ('ALIGN', (1,1), (1,-1), 'LEFT'),
             ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
             ('FONTSIZE', (0,0), (-1,0), 10),
-            ('BOTTOMPADDING', (0,0), (-1,0), 8),
-            ('TOPPADDING', (0,0), (-1,0), 8),
+            ('BOTTOMPADDING', (0,0), (-1,0), 10),
+            ('TOPPADDING', (0,0), (-1,0), 10),
             ('BACKGROUND', (0,1), (-1,-1), colors.white),
-            ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, color_fondo_tarjeta]),
+            ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, color_fondo]),
             ('GRID', (0,0), (-1,-1), 0.5, color_borde),
-            ('PADDING', (0,0), (-1,-1), 7),
-            ('FONTSIZE', (0,1), (-1,-1), 9.5),
+            ('PADDING', (0,0), (-1,-1), 10),
+            ('FONTSIZE', (0,1), (-1,-1), 10),
+            ('TEXTCOLOR', (0,1), (-1,-1), color_texto),
         ]))
         elementos.append(t_items)
-        elementos.append(Spacer(1, 12))
+        elementos.append(Spacer(1, 20))
 
-        totales_data = [["", Paragraph(f"<font size=12><b>Total General:</b></font> <font size=14 color='#1e40af'><b>${total_pedido:,.2f}</b></font>", estilos['Normal'])]]
-        t_totales = Table(totales_data, colWidths=[300, 240])
+        totales_data = [["", Paragraph(f"<font size=12 color='#64748b'><b>Total General:</b></font> <font size=18 color='#1e3a8a'><b>${total_pedido:,.2f}</b></font>", estilos['Normal'])]]
+        t_totales = Table(totales_data, colWidths=[320, 200])
         t_totales.setStyle(TableStyle([
             ('ALIGN', (1,0), (1,0), 'RIGHT'),
-            ('BACKGROUND', (1,0), (1,0), colors.HexColor('#dbeafe')),
-            ('PADDING', (1,0), (1,0), 8),
-            ('BOX', (1,0), (1,0), 1, colors.HexColor('#93c5fd')),
+            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ('PADDING', (1,0), (1,0), 10),
         ]))
         elementos.append(t_totales)
         
         if pedido.observaciones_agente:
-            elementos.append(Spacer(1, 10))
-            obs_data = [[Paragraph(f"<b>Observaciones / Logística:</b> {pedido.observaciones_agente}", estilos['Normal'])]]
-            t_obs = Table(obs_data, colWidths=[540])
+            elementos.append(Spacer(1, 20))
+            obs_data = [[Paragraph(f"<font color='#64748b' size=9><b>OBSERVACIONES / LOGÍSTICA</b></font><br/><font color='#0f172a' size=10>{pedido.observaciones_agente}</font>", estilos['Normal'])]]
+            t_obs = Table(obs_data, colWidths=[520])
             t_obs.setStyle(TableStyle([
-                ('BACKGROUND', (0,0), (-1,-1), color_fondo_tarjeta),
-                ('PADDING', (0,0), (-1,-1), 8),
-                ('BOX', (0,0), (-1,-1), 0.5, color_borde),
+                ('BACKGROUND', (0,0), (-1,-1), color_fondo),
+                ('PADDING', (0,0), (-1,-1), 12),
+                ('BOX', (0,0), (-1,-1), 1, color_borde),
             ]))
             elementos.append(t_obs)
 
@@ -729,32 +790,79 @@ def crear_pedido(pedido: PedidoCreate, usuario_sesion: dict = Depends(usuario_ac
     finally:
         conexion.close()
 
-@app.post("/pedidos/{pedido_id}/preparar", summary="Preparar pedido: descuenta físico y reserva")
-def preparar_pedido(pedido_id: int, usuario_sesion: dict = Depends(usuario_actual)):
+@app.patch("/pedidos/{pedido_id}/estado", summary="Cambiar estado de un pedido con control estricto")
+def cambiar_estado_pedido(pedido_id: int, datos: CambioEstadoModel, usuario_sesion: dict = Depends(usuario_actual)):
+    
+    if usuario_sesion["rol"] != "admin":
+        raise HTTPException(status_code=403, detail="Acceso denegado. Solo los agentes o administradores pueden cambiar el estado de un pedido.")
+
     conexion = obtener_conexion()
     cursor = conexion.cursor()
+    
+    TRANSICIONES = {
+        "RECIBIDO": ["VALIDADO", "EXCEPCION", "CANCELADO"],
+        "VALIDADO": ["PREPARADO", "EXCEPCION", "CANCELADO"],
+        "PREPARADO": ["FACTURADO", "EXCEPCION"],
+        "FACTURADO": ["ARMADO", "EXCEPCION"],
+        "ARMADO": ["CARGADO", "EXCEPCION"],
+        "CARGADO": ["EN_REPARTO", "EXCEPCION"],
+        "EN_REPARTO": ["ENTREGADO", "EXCEPCION"],
+        "ENTREGADO": ["CERRADO"],
+        "EXCEPCION": ["RECIBIDO", "VALIDADO", "PREPARADO", "FACTURADO", "ARMADO", "CARGADO", "EN_REPARTO"]
+    }
+
     try:
-        cursor.execute("SELECT * FROM pedidos WHERE id = ?", (pedido_id,))
-        pedido = cursor.fetchone()
-        if not pedido:
+        cursor.execute("SELECT estado FROM pedidos WHERE id = ?", (pedido_id,))
+        fila = cursor.fetchone()
+        if not fila:
             raise HTTPException(status_code=404, detail="Pedido no encontrado.")
         
-        if pedido["estado"] not in ("RECIBIDO", "VALIDADO"):
-            raise HTTPException(status_code=400, detail=f"Solo se puede preparar un pedido RECIBIDO o VALIDADO (estado actual: {pedido['estado']}).")
+        estado_actual = fila["estado"]
+        nuevo_estado = datos.nuevo_estado.upper()
 
-        cursor.execute("SELECT producto_id, cantidad FROM detalle_pedidos WHERE pedido_id = ?", (pedido_id,))
-        for det in cursor.fetchall():
-            cursor.execute("""
-                UPDATE productos
-                SET stock_fisico = stock_fisico - ?, stock_reservado = stock_reservado - ?
-                WHERE id = ? AND stock_reservado >= ? AND stock_fisico >= ?
-            """, (det["cantidad"], det["cantidad"], det["producto_id"], det["cantidad"], det["cantidad"]))
-            if cursor.rowcount == 0:
-                raise HTTPException(status_code=409, detail="Inconsistencia de stock: la reserva no alcanza.")
+        if nuevo_estado not in ESTADOS_CLIENTE:
+            raise HTTPException(status_code=400, detail=f"Estado '{nuevo_estado}' inválido.")
 
-        cursor.execute("UPDATE pedidos SET estado = 'PREPARADO' WHERE id = ?", (pedido_id,))
+        if nuevo_estado not in TRANSICIONES.get(estado_actual, []):
+            raise HTTPException(status_code=400, detail=f"No se puede pasar de '{estado_actual}' a '{nuevo_estado}'.")
+
+        if nuevo_estado == "PREPARADO":
+            cursor.execute("SELECT producto_id, cantidad FROM detalle_pedidos WHERE pedido_id = ?", (pedido_id,))
+            for det in cursor.fetchall():
+                cursor.execute("""
+                    UPDATE productos
+                    SET stock_fisico = stock_fisico - ?, stock_reservado = stock_reservado - ?
+                    WHERE id = ? AND stock_reservado >= ? AND stock_fisico >= ?
+                """, (det["cantidad"], det["cantidad"], det["producto_id"], det["cantidad"], det["cantidad"]))
+                if cursor.rowcount == 0:
+                    raise HTTPException(status_code=409, detail="Inconsistencia de stock al preparar.")
+                
+                # Verificar alerta silenciosa de stock
+                verificar_alerta_stock(cursor, det["producto_id"])
+
+        if nuevo_estado == "CANCELADO":
+            cursor.execute("SELECT producto_id, cantidad FROM detalle_pedidos WHERE pedido_id = ?", (pedido_id,))
+            for det in cursor.fetchall():
+                cursor.execute("""
+                    UPDATE productos
+                    SET stock_reservado = stock_reservado - ?
+                    WHERE id = ? AND stock_reservado >= ?
+                """, (det["cantidad"], det["producto_id"], det["cantidad"]))
+            cursor.execute("UPDATE clientes SET saldo_actual = saldo_actual - (SELECT total FROM pedidos WHERE id = ?) WHERE id = (SELECT cliente_id FROM pedidos WHERE id = ?)", (pedido_id, pedido_id))
+
+        quien_cambio = usuario_sesion.get("usuario") or usuario_sesion["email"]
+        
+        cursor.execute("UPDATE pedidos SET estado_anterior = estado, estado = ? WHERE id = ?", (nuevo_estado, pedido_id))
+        cursor.execute("""
+            INSERT INTO pedido_historial_estados (pedido_id, estado_anterior, estado_nuevo, cambiado_por)
+            VALUES (?, ?, ?, ?)
+        """, (pedido_id, estado_actual, nuevo_estado, quien_cambio))
+
         conexion.commit()
-        return {"mensaje": f"Pedido #{pedido_id} preparado. Stock físico descontado."}
+        return {
+            "mensaje": f"Estado actualizado a {ESTADOS_CLIENTE[nuevo_estado]}",
+            "nuevo_estado": nuevo_estado
+        }
     except HTTPException:
         conexion.rollback()
         raise
@@ -764,43 +872,29 @@ def preparar_pedido(pedido_id: int, usuario_sesion: dict = Depends(usuario_actua
     finally:
         conexion.close()
 
-@app.post("/pedidos/{pedido_id}/cancelar", summary="Cancelar pedido: libera la reserva")
-def cancelar_pedido(pedido_id: int, usuario_sesion: dict = Depends(usuario_actual)):
+@app.get("/pedidos/{pedido_id}/seguimiento", summary="Obtener línea de tiempo del pedido")
+def seguimiento_pedido(pedido_id: int, usuario_sesion: dict = Depends(usuario_actual)):
     conexion = obtener_conexion()
     cursor = conexion.cursor()
     try:
-        cursor.execute("SELECT * FROM pedidos WHERE id = ?", (pedido_id,))
-        pedido = cursor.fetchone()
-        if not pedido:
-            raise HTTPException(status_code=404, detail="Pedido no encontrado.")
-        if pedido["estado"] == "CANCELADO":
-            raise HTTPException(status_code=400, detail="El pedido ya estaba cancelado.")
+        cursor.execute("""
+            SELECT estado_anterior, estado_nuevo, fecha, cambiado_por 
+            FROM pedido_historial_estados 
+            WHERE pedido_id = ? 
+            ORDER BY fecha ASC
+        """, (pedido_id,))
         
-        if pedido["estado"] not in ("RECIBIDO", "VALIDADO"):
-            raise HTTPException(status_code=400, detail=f"Solo se puede cancelar un pedido RECIBIDO o VALIDADO.")
-
-        cursor.execute("SELECT producto_id, cantidad FROM detalle_pedidos WHERE pedido_id = ?", (pedido_id,))
-        for det in cursor.fetchall():
-            cursor.execute("""
-                UPDATE productos
-                SET stock_reservado = stock_reservado - ?
-                WHERE id = ? AND stock_reservado >= ?
-            """, (det["cantidad"], det["producto_id"], det["cantidad"]))
-            if cursor.rowcount == 0:
-                raise HTTPException(status_code=409, detail="Inconsistencia de stock: no hay reserva suficiente.")
-
-        cursor.execute("UPDATE clientes SET saldo_actual = saldo_actual - ? WHERE id = ?", (pedido["total"], pedido["cliente_id"]))
-        cursor.execute("UPDATE pedidos SET estado = 'CANCELADO' WHERE id = ?", (pedido_id,))
-        conexion.commit()
-        return {"mensaje": f"Pedido #{pedido_id} cancelado. Reserva liberada."}
-    except HTTPException:
-        conexion.rollback()
-        raise
-    except Exception as e:
-        conexion.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
+        historial = []
+        for f in cursor.fetchall():
+            h = dict(f)
+            h["estado_cliente"] = ESTADOS_CLIENTE.get(h["estado_nuevo"], h["estado_nuevo"])
+            historial.append(h)
+            
         conexion.close()
+        return historial
+    except Exception as e:
+        conexion.close()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/pedidos/todos", summary="Listar historial de pedidos de la sesión")
 def listar_todos_pedidos(usuario_sesion: dict = Depends(usuario_actual)):
@@ -825,6 +919,60 @@ def listar_todos_pedidos(usuario_sesion: dict = Depends(usuario_actual)):
             ORDER BY p.fecha DESC
         """, (usuario_sesion["id"],))
         
-    pedidos = [dict(fila) for fila in cursor.fetchall()]
+    pedidos = []
+    for fila in cursor.fetchall():
+        ped = dict(fila)
+        ped["estado_cliente"] = ESTADOS_CLIENTE.get(ped["estado"], ped["estado"])
+        pedidos.append(ped)
+        
     conexion.close()
     return pedidos
+
+# ==========================================
+# ENDPOINTS DE ALERTAS DE STOCK (Para el Agente)
+# ==========================================
+
+@app.get("/alertas-stock/pendientes", summary="Obtener alertas de stock bajo (Solo Agentes/Admin)")
+def obtener_alertas_pendientes(usuario_sesion: dict = Depends(usuario_actual)):
+    if usuario_sesion["rol"] != "admin":
+        raise HTTPException(status_code=403, detail="Acceso denegado. Solo agentes o admin pueden ver alertas.")
+    
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    
+    cursor.execute("""
+        SELECT a.id as alerta_id, a.fecha_generacion, a.stock_actual, 
+               p.id as producto_id, p.codigo, p.nombre, p.stock_fisico, p.stock_reservado
+        FROM alertas_stock a
+        JOIN productos p ON a.producto_id = p.id
+        WHERE a.estado = 'PENDIENTE'
+        ORDER BY a.fecha_generacion DESC
+    """)
+    
+    alertas = [dict(fila) for fila in cursor.fetchall()]
+    conexion.close()
+    return alertas
+
+@app.patch("/alertas-stock/{alerta_id}/resolver", summary="Marcar alerta como resuelta")
+def resolver_alerta(alerta_id: int, usuario_sesion: dict = Depends(usuario_actual)):
+    if usuario_sesion["rol"] != "admin":
+        raise HTTPException(status_code=403, detail="Acceso denegado.")
+        
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    cursor.execute("UPDATE alertas_stock SET estado = 'RESUELTA' WHERE id = ?", (alerta_id,))
+    conexion.commit()
+    conexion.close()
+    return {"mensaje": "Alerta marcada como resuelta."}
+
+# ==========================================
+# ENDPOINTS DE COMPATIBILIDAD
+# ==========================================
+
+@app.post("/pedidos/{pedido_id}/preparar", summary="Preparar pedido (Mantenido por compatibilidad)")
+def preparar_pedido(pedido_id: int, usuario_sesion: dict = Depends(usuario_actual)):
+    return cambiar_estado_pedido(pedido_id, CambioEstadoModel(nuevo_estado="PREPARADO"), usuario_sesion)
+
+@app.post("/pedidos/{pedido_id}/cancelar", summary="Cancelar pedido (Mantenido por compatibilidad)")
+def cancelar_pedido(pedido_id: int, usuario_sesion: dict = Depends(usuario_actual)):
+    return cambiar_estado_pedido(pedido_id, CambioEstadoModel(nuevo_estado="CANCELADO"), usuario_sesion)

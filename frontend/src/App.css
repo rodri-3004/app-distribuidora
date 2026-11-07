@@ -1,43 +1,16 @@
-/* frontend/src/App.css */
-:root {
-  --primary-blue: #1d4ed8;
-  --primary-light: #eff6ff;
-  --accent-cyan: #06b6d4;
-  --bg-main: #f8fafc;
-  --text-dark: #0f172a;
-  --text-gray: #64748b;
-  --border-radius: 16px;
-}
-
-body {
-  background-color: var(--bg-main);
-  color: var(--text-dark);
-  font-family: 'Poppins', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-  margin: 0;
-  padding: 0;
-  -webkit-font-smoothing: antialiased;
-}
-
-/* Contenedor principal estilo tarjeta móvil/app corporativa */
-.app-container {
-  max-width: 950px;
-  margin: 20px auto;
-  background: #ffffff;
-  border-radius: 24px;
-  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.08), 0 8px 10px -6px rgba(0, 0, 0, 0.08);
-  overflow: hidden;
-  border: 1px solid #e2e8f0;
-}
-
-/* Botones modernos */
+/* ==========================================
+   BOTONES E INPUTS GLOBALES
+   ========================================== */
 button {
   transition: all 0.2s ease-in-out;
   cursor: pointer;
   font-family: inherit;
+  border: none;
+  outline: none;
 }
 
 button:hover {
-  filter: brightness(1.08);
+  filter: brightness(1.05);
   transform: translateY(-1px);
 }
 
@@ -45,74 +18,103 @@ button:active {
   transform: translateY(0);
 }
 
-/* Campos de entrada */
-input, select {
-  border: 1px solid #cbd5e1;
-  border-radius: 12px;
-  padding: 10px 14px;
-  font-size: 14px;
+input, select, textarea {
   font-family: inherit;
-  color: var(--text-dark);
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 12px 16px;
+  font-size: 14px;
+  color: #0f172a;
   background-color: #f8fafc;
-  outline: none;
-  transition: all 0.2s;
-}
-
-input:focus, select:focus {
-  border-color: var(--primary-blue);
-  background-color: #ffffff;
-  box-shadow: 0 0 0 3px rgba(29, 78, 216, 0.12);
-}
-
-input[type="number"] {
-  text-align: center;
-}
-
-/* Tarjetas modernas con bordes redondeados y sombras suaves */
-.card-modern {
-  background: #ffffff;
-  border: 1px solid #f1f5f9;
-  border-radius: var(--border-radius);
-  padding: 20px;
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.02), 0 2px 4px -2px rgba(0, 0, 0, 0.02);
   transition: all 0.2s ease;
+  outline: none;
+  width: 100%;
 }
 
-.card-modern:hover {
-  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.06);
+input:focus, select:focus, textarea:focus {
+  border-color: #2563eb;
+  background-color: #ffffff;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+/* ==========================================
+   CLASES DE DISEÑO
+   ========================================== */
+.navbar-gradient {
+  background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 60%, #1d4ed8 100%);
+  color: white;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+}
+
+.card-producto {
+  background: #ffffff;
+  border-radius: 20px;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.02);
+  transition: all 0.2s ease;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 20px;
+}
+
+.card-producto:hover {
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.05);
   transform: translateY(-2px);
 }
 
-/* Menú desplegable / Hamburguesa */
-.dropdown-menu {
-  position: absolute;
-  right: 0;
-  top: 50px;
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
+.btn-primary {
+  background: #2563eb;
+  color: #fff;
+  font-weight: 600;
   border-radius: 12px;
-  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
-  width: 200px;
-  z-index: 100;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
+  padding: 12px 20px;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.2);
 }
 
-.dropdown-item {
-  padding: 12px 16px;
-  text-align: left;
-  background: transparent;
-  border: none;
-  color: var(--text-dark);
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background 0.15s;
+.btn-primary:hover {
+  background: #1d4ed8;
 }
 
-.dropdown-item:hover {
-  background: var(--primary-light);
-  color: var(--primary-blue);
-  transform: none;
+.btn-secondary {
+  background: #f1f5f9;
+  color: #334155;
+  font-weight: 600;
+  border-radius: 12px;
+  padding: 12px 20px;
+  border: 1px solid #e2e8f0;
+}
+
+.btn-secondary:hover {
+  background: #e2e8f0;
+}
+
+/* ==========================================
+   ANIMACIONES
+   ========================================== */
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideInRight {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.animate-slide-down {
+  animation: slideDown 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-slide-in-right {
+  animation: slideInRight 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.2s ease-out forwards;
 }
