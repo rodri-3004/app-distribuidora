@@ -1,6 +1,6 @@
 # CONTEXTO.md · Distribuidora de productos de limpieza (sistema multiagente)
 
-> Archivo de contexto del proyecto (versión 4.2). Todo asistente o agente que trabaje en este proyecto lo lee primero.
+> Archivo de contexto del proyecto (versión 4.3). Todo asistente o agente que trabaje en este proyecto lo lee primero.
 > Idioma de trabajo: español (código, nombres de tablas y mensajes).
 
 ## 1. Objetivo
@@ -25,6 +25,7 @@ Es una **prueba piloto** pensada para un caso real. La plataforma base ya está 
 - **Excepción:** situación que el sistema no resuelve solo; queda abierta hasta que una persona la resuelve.
 - **Nivel 0:** la persona que supervisa, da órdenes en lenguaje natural y resuelve excepciones.
 - **Agente Simulador:** un usuario con rol `admin` que simula al operario (armado) y al chofer (entrega). Se elimina en producción.
+- **Harness:** el entorno completo (guías + sensores) que permite a los agentes operar de forma segura y verificable.
 
 ## 4. Arquitectura en tres capas
 1. **Capa 1 · Plataforma piloto:** SQLite, API (FastAPI), tienda web (React) y Mini-ERP. Funciona a mano, sin IA.
@@ -38,7 +39,7 @@ Es una **prueba piloto** pensada para un caso real. La plataforma base ya está 
 - Roles actuales: `admin`, `cliente` y `agente`.
 - Sesión: el login devuelve un **token JWT** (`access_token`, vence a las 8 horas). Los endpoints protegidos usan la dependencia `usuario_actual`.
 - Las contraseñas se guardan con **bcrypt**.
-- Los agentes se crearon con la tabla `usuarios` actualizada para aceptar el rol `'agente'`.
+- Los agentes se crearon con la tabla `usuarios` actualizada para aceptar el rol `'agente'`. Cada agente tiene su propia cuenta de correo (ej. `recepcionista@distribuidora.com`) para que los logs de trazabilidad sean correctos.
 
 ## 5. Estados del pedido
 `RECIBIDO → VALIDADO → PREPARADO → FACTURADO → ARMADO → CARGADO → EN_REPARTO → ENTREGADO → CERRADO`
@@ -65,7 +66,7 @@ Es una **prueba piloto** pensada para un caso real. La plataforma base ya está 
 - **R6 · Cambios masivos:** siempre en dos pasos (vista previa y aplicación), con confirmación del Nivel 0 e historial reversible.
 - **R7 · Excepciones:** toda excepción tiene motivo y queda abierta hasta que una persona la resuelve.
 - **R8 · Acceso y trazabilidad:** solo por API con identidad; cada acción deja un evento con evidencia en `pedido_historial_estados` y en `eventos_log`.
-- **R9 · Separación de datos:** cada usuario ve solo sus clientes y sus pedidos; admin y agentes ven todo.
+- **R9 · Separación de datos:** cada usuario ve solo sus clientes y sus pedidos; admin y agentes ven todo. **Los clientes no pueden modificar ni ver pedidos ajenos (validado en API).**
 - **R10 · Planillas:** el stock y el saldo de una planilla solo se usan al **crear** el producto o el cliente. Reimportar nunca pisa el stock ni el saldo reales.
 - **R11 · Alertas silenciosas:** cuando un producto baja de su `stock_minimo`, se genera un registro en `alertas_stock`. El agente de stock debe consultarlas y resolverlas.
 
@@ -89,6 +90,7 @@ Es una **prueba piloto** pensada para un caso real. La plataforma base ya está 
 - **D8 · Un CUIT/DNI = un cliente = un dueño.**
 - **D9 · Stock con reserva** (decidido e implementado).
 - **D10 · Simulación de operario y chofer:** como el piloto no tiene personas reales en esos roles, se creó un **Agente Simulador** con rol `admin` que ejecuta los endpoints de armar y entregar. En el harness de Paseo, este agente está representado por el archivo `simulador_humano.md`. Los archivos `controlador_armado.md` y `seguimiento.md` quedan inactivos en el piloto y se activan en producción.
+- **D11 · IVA en facturación:** el precio del producto en el pedido es el subtotal. Al facturar (`POST /pedidos/{id}/facturar`), la API calcula el 21% de IVA y lo suma al total de la factura. El pedido guarda el total sin IVA, y la factura el total con IVA. (Si en producción los precios de lista incluyen IVA, esta lógica deberá invertirse).
 
 ## 9. Base de datos (16 tablas)
 Tablas del plan: `usuarios`, `clientes`, `movimientos_cuenta`, `productos`, `precios_historial`, `pedidos`, `detalle_pedidos`, `facturas`, `armados`, `camiones`, `rutas_paradas`, `entregas`, `eventos_log`, `excepciones`.
@@ -136,6 +138,7 @@ APP-DISTRIBUIDORA-PROCESOS/
 │ └── package.json
 ├── agentes/
 │ ├── supervisor.md
+│ ├── playbook.md
 │ ├── recepcionista.md
 │ ├── validador_precios.md
 │ ├── validador_credito.md
@@ -148,7 +151,10 @@ APP-DISTRIBUIDORA-PROCESOS/
 │ ├── registro.md
 │ ├── gestor_precios.md
 │ ├── reposicion.md
-│ └── simulador_humano.md
+│ ├── simulador_humano.md
+│ └── validar_salida.py
+├── tests/
+│ └── test_flujo_completo.py
 ├── documentos_pedidos/
 ├── clientes.xlsx
 ├── productos.xlsx
@@ -193,12 +199,15 @@ APP-DISTRIBUIDORA-PROCESOS/
 - Instalar dependencias de la API: `pip install fastapi uvicorn pandas openpyxl reportlab email-validator python-multipart pyjwt bcrypt`
 - API: `uvicorn main:app --reload --port 8001` desde la carpeta `api` (documentación en `http://127.0.0.1:8001/docs`).
 - Frontend: `npm run dev` desde `frontend` (`http://localhost:5173`).
+- Ejecutar tests de integración: `python tests/test_flujo_completo.py` (con la API corriendo).
 - Reiniciar datos de prueba: `python base_datos/resetear_pedidos_a_pendientes.py` y luego `python base_datos/reconciliar_stock.py`.
 
 ## 15. Fase actual
-**Fase 1 · Agentes en Paseo.sh.** La plataforma está 100% completa y funcional. Los usuarios de los agentes están creados (6 agentes + 1 simulador). Los 13 archivos `.md` de instrucciones están en la carpeta `agentes/`. El siguiente paso es abrir Paseo.sh, cargar la carpeta del proyecto y darle la orden al Supervisor para que empiece a operar.
+**Fase 1 · Agentes en Paseo.sh.** La plataforma está 100% completa y funcional. Las identidades de los 13 agentes están creadas (12 agentes + 1 simulador). Los archivos `.md` de instrucciones están en la carpeta `agentes/`, incluyendo el `playbook.md`. El harness cuenta con sensores (test de integración y validador de salida). El siguiente paso es abrir Paseo.sh, cargar la carpeta del proyecto y darle la orden al Supervisor para que empiece a operar.
 
 ## 16. Seguridad: notas del piloto local
 - `/recuperar-password` y `/registro` devuelven el código en la respuesta (`token_debug`) y `/activar` no verifica el código: aceptable solo en la PC local; resolver antes de usar datos reales.
 - Los nombres de dueño son texto (`usuario_dueno`), sin clave foránea.
 - El agente simulador tiene rol `admin` para poder hacer de operario y chofer. En producción, se elimina.
+- **Validaciones de API:** Se agregaron chequeos para que los clientes no puedan ver pedidos ajenos, modificar clientes de otros dueños o crear pedidos a nombre de otros. Los agentes y admins tienen acceso total.
+- **Claves de agentes:** Las claves de los agentes están definidas en el script `base_datos/crear_agentes_paseo.py` (ej. `Super123!`, `Recepcion123!`, etc.) y encriptadas en la base de datos con bcrypt.

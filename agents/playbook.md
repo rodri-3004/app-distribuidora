@@ -39,6 +39,7 @@ Pedidos cerrados: [ID1, ID2, ID3]
 Excepciones abiertas: []
 Evidencia: [evento_id1, evento_id2, ...]
 ```
+
 ---
 
 ## Comando 2 · Consulta informativa (no delegar)

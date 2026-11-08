@@ -1,0 +1,60 @@
+{
+  "project": "Distribuidora de Limpieza",
+  "version": "1.0",
+  "tasks": [
+    {
+      "id": 1,
+      "description": "Procesar pedidos en estado RECIBIDO",
+      "status": "pass",
+      "assigned_to": "recepcionista"
+    },
+    {
+      "id": 2,
+      "description": "Validar precios y stock de pedidos VALIDADOS",
+      "status": "pass",
+      "assigned_to": "validador_precios"
+    },
+    {
+      "id": 3,
+      "description": "Validar crédito de clientes",
+      "status": "pass",
+      "assigned_to": "validador_credito"
+    },
+    {
+      "id": 4,
+      "description": "Preparar pedidos (descontar stock)",
+      "status": "pass",
+      "assigned_to": "preparador"
+    },
+    {
+      "id": 5,
+      "description": "Facturar pedidos PREPARADOS",
+      "status": "pass",
+      "assigned_to": "facturador"
+    },
+    {
+      "id": 6,
+      "description": "Simular armado de pedidos FACTURADOS",
+      "status": "pass",
+      "assigned_to": "simulador_humano"
+    },
+    {
+      "id": 7,
+      "description": "Planificar rutas de pedidos ARMADOS",
+      "status": "pass",
+      "assigned_to": "planificador"
+    },
+    {
+      "id": 8,
+      "description": "Simular entrega de pedidos CARGADOS",
+      "status": "pass",
+      "assigned_to": "simulador_humano"
+    },
+    {
+      "id": 9,
+      "description": "Auditar y cerrar pedidos ENTREGADOS",
+      "status": "pass",
+      "assigned_to": "auditor"
+    }
+  ]
+}
