@@ -1,6 +1,6 @@
 # CONTEXTO.md · Distribuidora de productos de limpieza (sistema multiagente)
 
-> Archivo de contexto del proyecto (versión 4.1). Todo asistente o agente que trabaje en este proyecto lo lee primero.
+> Archivo de contexto del proyecto (versión 4.2). Todo asistente o agente que trabaje en este proyecto lo lee primero.
 > Idioma de trabajo: español (código, nombres de tablas y mensajes).
 
 ## 1. Objetivo
@@ -88,7 +88,7 @@ Es una **prueba piloto** pensada para un caso real. La plataforma base ya está 
 - **D7 · Datos del piloto:** de prueba al inicio, desde planillas; reales de la distribuidora más adelante.
 - **D8 · Un CUIT/DNI = un cliente = un dueño.**
 - **D9 · Stock con reserva** (decidido e implementado).
-- **D10 · Simulación de operario y chofer:** como el piloto no tiene personas reales en esos roles, se creó un **Agente Simulador** con rol `admin` que ejecuta los endpoints de armar y entregar. En producción, este agente se elimina y las tareas las realizan personas.
+- **D10 · Simulación de operario y chofer:** como el piloto no tiene personas reales en esos roles, se creó un **Agente Simulador** con rol `admin` que ejecuta los endpoints de armar y entregar. En el harness de Paseo, este agente está representado por el archivo `simulador_humano.md`. Los archivos `controlador_armado.md` y `seguimiento.md` quedan inactivos en el piloto y se activan en producción.
 
 ## 9. Base de datos (16 tablas)
 Tablas del plan: `usuarios`, `clientes`, `movimientos_cuenta`, `productos`, `precios_historial`, `pedidos`, `detalle_pedidos`, `facturas`, `armados`, `camiones`, `rutas_paradas`, `entregas`, `eventos_log`, `excepciones`.
@@ -137,9 +137,17 @@ APP-DISTRIBUIDORA-PROCESOS/
 ├── agentes/
 │ ├── supervisor.md
 │ ├── recepcionista.md
+│ ├── validador_precios.md
+│ ├── validador_credito.md
+│ ├── preparador.md
 │ ├── facturador.md
-│ ├── gestor_stock.md
+│ ├── controlador_armado.md (inactivo en piloto)
 │ ├── planificador.md
+│ ├── seguimiento.md (inactivo en piloto)
+│ ├── auditor.md
+│ ├── registro.md
+│ ├── gestor_precios.md
+│ ├── reposicion.md
 │ └── simulador_humano.md
 ├── documentos_pedidos/
 ├── clientes.xlsx
@@ -161,6 +169,7 @@ APP-DISTRIBUIDORA-PROCESOS/
 - `POST /pedidos`, `PATCH /pedidos/{id}/estado`, `GET /pedidos/{id}/seguimiento`, `GET /pedidos/todos`
 - `GET /pedidos?estado={estado}`, `GET /pedidos/{id}`, `GET /pedidos/entrega/{fecha}`
 - `POST /pedidos/{id}/asignar-fecha`
+- `GET /pedidos/{id}/factura`, `GET /pedidos/{id}/entrega`
 
 ### Logística
 - `POST /pedidos/{id}/facturar`
@@ -187,7 +196,7 @@ APP-DISTRIBUIDORA-PROCESOS/
 - Reiniciar datos de prueba: `python base_datos/resetear_pedidos_a_pendientes.py` y luego `python base_datos/reconciliar_stock.py`.
 
 ## 15. Fase actual
-**Fase 1 · Agentes en Paseo.sh.** La plataforma está 100% completa y funcional. Los usuarios de los agentes están creados (5 agentes + 1 simulador). Los archivos `.md` de instrucciones están en la carpeta `agentes/`. El siguiente paso es abrir Paseo.sh, cargar la carpeta del proyecto y darle la orden al Supervisor para que empiece a operar.
+**Fase 1 · Agentes en Paseo.sh.** La plataforma está 100% completa y funcional. Los usuarios de los agentes están creados (6 agentes + 1 simulador). Los 13 archivos `.md` de instrucciones están en la carpeta `agentes/`. El siguiente paso es abrir Paseo.sh, cargar la carpeta del proyecto y darle la orden al Supervisor para que empiece a operar.
 
 ## 16. Seguridad: notas del piloto local
 - `/recuperar-password` y `/registro` devuelven el código en la respuesta (`token_debug`) y `/activar` no verifica el código: aceptable solo en la PC local; resolver antes de usar datos reales.

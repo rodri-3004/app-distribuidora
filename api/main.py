@@ -17,7 +17,6 @@ import re
 import pandas as pd
 import io
 
-# Importaciones para ReportLab (Generación de PDF)
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet
@@ -25,11 +24,10 @@ from reportlab.lib import colors
 
 app = FastAPI(
     title="API Distribuidora de Limpieza",
-    version="1.47",
-    description="API B2B con Modelo Profesional, Seguridad JWT, Trazabilidad, Logística, Fechas de Entrega y Excepciones."
+    version="1.49",
+    description="API B2B con Modelo Profesional, Seguridad JWT, Trazabilidad, Logística y Auditoría."
 )
 
-# Configuración de CORS para permitir el frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
@@ -38,7 +36,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Carpetas y archivos
 CARPETA_PDFS = Path(__file__).parent.parent / "documentos_pedidos"
 CARPETA_PDFS.mkdir(parents=True, exist_ok=True)
 app.mount("/documentos_pedidos", StaticFiles(directory=str(CARPETA_PDFS)), name="documentos_pedidos")
@@ -47,9 +44,6 @@ RUTA_DB = Path(__file__).parent / "distribuidora.db"
 if not RUTA_DB.exists():
     RUTA_DB = Path(__file__).parent.parent / "base_datos" / "distribuidora.db"
 
-# ==========================================
-# CONEXIÓN A BASE DE DATOS
-# ==========================================
 def obtener_conexion():
     if not RUTA_DB.exists():
         raise HTTPException(status_code=500, detail="La base de datos no existe.")
@@ -59,7 +53,6 @@ def obtener_conexion():
     return conexion
 
 def asegurar_esquema(cursor):
-    # Verificar columnas de clientes
     cursor.execute("PRAGMA table_info(clientes)")
     col_clientes = [col["name"] for col in cursor.fetchall()]
     if "telefono" not in col_clientes:
@@ -71,7 +64,6 @@ def asegurar_esquema(cursor):
     if "usuario_dueno" not in col_clientes:
         cursor.execute("ALTER TABLE clientes ADD COLUMN usuario_dueno TEXT DEFAULT 'admin'")
 
-    # Verificar columnas de pedidos
     cursor.execute("PRAGMA table_info(pedidos)")
     col_pedidos = [col["name"] for col in cursor.fetchall()]
     if "usuario_id" not in col_pedidos:
@@ -81,7 +73,6 @@ def asegurar_esquema(cursor):
     if "fecha_entrega" not in col_pedidos:
         cursor.execute("ALTER TABLE pedidos ADD COLUMN fecha_entrega TEXT")
 
-    # Verificar columnas de productos
     cursor.execute("PRAGMA table_info(productos)")
     col_productos = [col["name"] for col in cursor.fetchall()]
     if "stock_reservado" not in col_productos:
@@ -94,9 +85,6 @@ def asegurar_esquema(cursor):
 def generar_hash(clave: str) -> str:
     return hashlib.sha256(clave.encode('utf-8')).hexdigest()
 
-# ==========================================
-# TRADUCCIÓN DE ESTADOS
-# ==========================================
 ESTADOS_CLIENTE = {
     "RECIBIDO": "Pendiente",
     "VALIDADO": "En preparación",
@@ -111,9 +99,6 @@ ESTADOS_CLIENTE = {
     "CANCELADO": "Cancelado"
 }
 
-# ==========================================
-# SEGURIDAD
-# ==========================================
 def cargar_clave_jwt() -> str:
     clave = os.environ.get("JWT_SECRET")
     if clave:
@@ -166,9 +151,6 @@ def validar_clave_segura(clave: str) -> bool:
         return False
     return True
 
-# ==========================================
-# MODELOS PYDANTIC
-# ==========================================
 class UsuarioRegistro(BaseModel):
     nombre: str
     apellido: str
@@ -250,9 +232,6 @@ class EventoModel(BaseModel):
     salida_json: Optional[str] = None
     evidencia: Optional[str] = None
 
-# ==========================================
-# ALERTAS DE STOCK
-# ==========================================
 def verificar_alerta_stock(cursor, producto_id: int):
     cursor.execute("SELECT id, nombre, stock_fisico, stock_reservado, stock_minimo FROM productos WHERE id = ?", (producto_id,))
     prod = cursor.fetchone()
@@ -265,9 +244,6 @@ def verificar_alerta_stock(cursor, producto_id: int):
         if not cursor.fetchone():
             cursor.execute("INSERT INTO alertas_stock (producto_id, stock_actual, estado) VALUES (?, ?, 'PENDIENTE')", (producto_id, stock_disponible))
 
-# ==========================================
-# ENDPOINTS DE AUTENTICACIÓN
-# ==========================================
 @app.post("/registro", summary="Registrar nuevo usuario")
 def registrar_usuario(datos: UsuarioRegistro):
     if not validar_dni_cuil(datos.dni_cuil):
@@ -407,9 +383,6 @@ def cambiar_password(datos: CambiarPasswordModel, usuario_sesion: dict = Depends
     conexion.close()
     return {"mensaje": "Contraseña actualizada con éxito."}
 
-# ==========================================
-# PRODUCTOS
-# ==========================================
 @app.get("/productos", summary="Listar catálogo global")
 def listar_productos():
     conexion = obtener_conexion()
@@ -457,9 +430,6 @@ async def importar_productos_excel(file: UploadFile = File(...), usuario: dict =
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al procesar la planilla: {str(e)}")
 
-# ==========================================
-# CLIENTES
-# ==========================================
 @app.get("/clientes", summary="Listar clientes exclusivos de la sesión")
 def listar_clientes(usuario_sesion: dict = Depends(usuario_actual)):
     conexion = obtener_conexion()
@@ -544,10 +514,20 @@ def actualizar_cliente(cliente_id: int, c: ClienteModel, usuario_sesion: dict = 
         asegurar_esquema(cursor)
         cursor.execute("SELECT usuario_dueno FROM clientes WHERE id = ?", (cliente_id,))
         dueno_row = cursor.fetchone()
-        dueno = dueno_row["usuario_dueno"] if dueno_row else c.usuario_dueno
-        cursor.execute("UPDATE clientes SET razon_social=?, cuit=?, direccion_entrega=?, telefono=?, condicion_fiscal=?, medio_pago=?, usuario_dueno=? WHERE id=?", (c.razon_social, c.cuit, c.direccion, c.telefono, c.condicion_fiscal, c.medio_pago, dueno, cliente_id))
+        
+        if not dueno_row:
+            raise HTTPException(status_code=404, detail="Cliente no encontrado.")
+            
+        username = usuario_sesion.get("usuario") or usuario_sesion["email"].split("@")[0]
+        if usuario_sesion["rol"] == "cliente" and dueno_row["usuario_dueno"] != username:
+            raise HTTPException(status_code=403, detail="No tenés permiso para modificar este cliente.")
+
+        cursor.execute("UPDATE clientes SET razon_social=?, cuit=?, direccion_entrega=?, telefono=?, condicion_fiscal=?, medio_pago=?, usuario_dueno=? WHERE id=?", (c.razon_social, c.cuit, c.direccion, c.telefono, c.condicion_fiscal, c.medio_pago, dueno_row["usuario_dueno"], cliente_id))
         conexion.commit()
         return {"mensaje": "Cliente actualizado con éxito"}
+    except HTTPException as he:
+        conexion.rollback()
+        raise he
     except Exception as e:
         conexion.rollback()
         raise HTTPException(status_code=500, detail=str(e))
@@ -559,18 +539,28 @@ def eliminar_cliente(cliente_id: int, usuario_sesion: dict = Depends(usuario_act
     conexion = obtener_conexion()
     cursor = conexion.cursor()
     try:
+        cursor.execute("SELECT usuario_dueno FROM clientes WHERE id = ?", (cliente_id,))
+        dueno_row = cursor.fetchone()
+        
+        if not dueno_row:
+            raise HTTPException(status_code=404, detail="Cliente no encontrado.")
+            
+        username = usuario_sesion.get("usuario") or usuario_sesion["email"].split("@")[0]
+        if usuario_sesion["rol"] == "cliente" and dueno_row["usuario_dueno"] != username:
+            raise HTTPException(status_code=403, detail="No tenés permiso para eliminar este cliente.")
+
         cursor.execute("DELETE FROM clientes WHERE id = ?", (cliente_id,))
         conexion.commit()
         return {"mensaje": "Cliente eliminado con éxito"}
+    except HTTPException as he:
+        conexion.rollback()
+        raise he
     except Exception as e:
         conexion.rollback()
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         conexion.close()
 
-# ==========================================
-# PEDIDOS
-# ==========================================
 @app.get("/pedidos/todos", summary="Historial de pedidos")
 def listar_todos_pedidos(usuario_sesion: dict = Depends(usuario_actual)):
     conexion = obtener_conexion()
@@ -594,13 +584,22 @@ def listar_pedidos_por_fecha_entrega(fecha: str, usuario_sesion: dict = Depends(
     conexion = obtener_conexion()
     cursor = conexion.cursor()
     try:
-        cursor.execute("""
-            SELECT p.id, p.fecha, p.estado, p.total, p.fecha_entrega, c.razon_social
-            FROM pedidos p
-            LEFT JOIN clientes c ON p.cliente_id = c.id
-            WHERE p.fecha_entrega = ?
-            ORDER BY p.id ASC
-        """, (fecha,))
+        if usuario_sesion["rol"] in ("admin", "agente"):
+            cursor.execute("""
+                SELECT p.id, p.fecha, p.estado, p.total, p.fecha_entrega, c.razon_social
+                FROM pedidos p
+                LEFT JOIN clientes c ON p.cliente_id = c.id
+                WHERE p.fecha_entrega = ?
+                ORDER BY p.id ASC
+            """, (fecha,))
+        else:
+            cursor.execute("""
+                SELECT p.id, p.fecha, p.estado, p.total, p.fecha_entrega, c.razon_social
+                FROM pedidos p
+                LEFT JOIN clientes c ON p.cliente_id = c.id
+                WHERE p.fecha_entrega = ? AND p.usuario_id = ?
+                ORDER BY p.id ASC
+            """, (fecha, usuario_sesion["id"]))
         pedidos = [dict(f) for f in cursor.fetchall()]
         conexion.close()
         return pedidos
@@ -613,21 +612,27 @@ def listar_pedidos_por_estado(estado: Optional[str] = None, usuario_sesion: dict
     conexion = obtener_conexion()
     cursor = conexion.cursor()
     try:
-        if estado:
-            cursor.execute("""
-                SELECT p.id, p.fecha, p.estado, p.total, p.fecha_entrega, c.razon_social
-                FROM pedidos p
-                LEFT JOIN clientes c ON p.cliente_id = c.id
-                WHERE p.estado = ?
-                ORDER BY p.fecha DESC
-            """, (estado.upper(),))
+        query = """
+            SELECT p.id, p.fecha, p.estado, p.total, p.fecha_entrega, c.razon_social
+            FROM pedidos p
+            LEFT JOIN clientes c ON p.cliente_id = c.id
+        """
+        params = []
+        
+        if usuario_sesion["rol"] not in ("admin", "agente"):
+            query += " WHERE p.usuario_id = ?"
+            params.append(usuario_sesion["id"])
+            if estado:
+                query += " AND p.estado = ?"
+                params.append(estado.upper())
         else:
-            cursor.execute("""
-                SELECT p.id, p.fecha, p.estado, p.total, p.fecha_entrega, c.razon_social
-                FROM pedidos p
-                LEFT JOIN clientes c ON p.cliente_id = c.id
-                ORDER BY p.fecha DESC
-            """)
+            if estado:
+                query += " WHERE p.estado = ?"
+                params.append(estado.upper())
+                
+        query += " ORDER BY p.fecha DESC"
+        
+        cursor.execute(query, tuple(params))
         pedidos = [dict(f) for f in cursor.fetchall()]
         conexion.close()
         return pedidos
@@ -647,6 +652,11 @@ def crear_pedido(pedido: PedidoCreate, usuario_sesion: dict = Depends(usuario_ac
             if not cliente_row:
                 raise HTTPException(status_code=404, detail="El cliente especificado no existe.")
             cliente = dict(cliente_row)
+            
+            username = usuario_sesion.get("usuario") or usuario_sesion["email"].split("@")[0]
+            if usuario_sesion["rol"] == "cliente" and cliente.get("usuario_dueno") != username:
+                raise HTTPException(status_code=403, detail="No podés crear pedidos para clientes ajenos.")
+                
             cliente_id = cliente["id"]
             cliente["direccion"] = cliente.get("direccion_entrega", "")
         elif pedido.datos_cliente:
@@ -758,8 +768,19 @@ def obtener_pedido(pedido_id: int, usuario_sesion: dict = Depends(usuario_actual
         if not pedido_row:
             raise HTTPException(status_code=404, detail="Pedido no encontrado.")
         pedido = dict(pedido_row)
+        
+        username = usuario_sesion.get("usuario") or usuario_sesion["email"].split("@")[0]
+        if usuario_sesion["rol"] == "cliente" and pedido["usuario_id"] != usuario_sesion["id"]:
+            raise HTTPException(status_code=403, detail="No tenés permiso para ver este pedido.")
+
         cursor.execute("SELECT id, razon_social, cuit, direccion_entrega, saldo_actual, limite_credito FROM clientes WHERE id = ?", (pedido["cliente_id"],))
         pedido["cliente"] = dict(cursor.fetchone())
+        
+        # Incluimos el estado del cliente para el validador_credito.md
+        cursor.execute("SELECT estado FROM clientes WHERE id = ?", (pedido["cliente_id"],))
+        estado_cli = cursor.fetchone()
+        pedido["cliente"]["estado"] = estado_cli["estado"] if estado_cli else "DESCONOCIDO"
+
         cursor.execute("""
             SELECT dp.producto_id, dp.cantidad, dp.precio_unitario, p.codigo, p.nombre
             FROM detalle_pedidos dp
@@ -769,9 +790,42 @@ def obtener_pedido(pedido_id: int, usuario_sesion: dict = Depends(usuario_actual
         pedido["items"] = [dict(f) for f in cursor.fetchall()]
         conexion.close()
         return pedido
+    except HTTPException as he:
+        conexion.close()
+        raise he
     except Exception as e:
         conexion.close()
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/pedidos/{pedido_id}/factura", summary="Ver factura del pedido")
+def ver_factura(pedido_id: int, usuario_sesion: dict = Depends(usuario_actual)):
+    if usuario_sesion["rol"] not in ("admin", "agente"):
+        raise HTTPException(status_code=403, detail="Acceso denegado.")
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    cursor.execute("SELECT * FROM facturas WHERE pedido_id = ?", (pedido_id,))
+    res = dict(cursor.fetchone()) if cursor.rowcount > 0 else None
+    conexion.close()
+    if not res:
+        raise HTTPException(status_code=404, detail="Factura no encontrada para este pedido.")
+    return res
+
+@app.get("/pedidos/{pedido_id}/entrega", summary="Ver entrega del pedido")
+def ver_entrega(pedido_id: int, usuario_sesion: dict = Depends(usuario_actual)):
+    if usuario_sesion["rol"] not in ("admin", "agente"):
+        raise HTTPException(status_code=403, detail="Acceso denegado.")
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    cursor.execute("""
+        SELECT e.* FROM entregas e
+        JOIN rutas_paradas rp ON e.parada_id = rp.id
+        WHERE rp.pedido_id = ?
+    """, (pedido_id,))
+    res = dict(cursor.fetchone()) if cursor.rowcount > 0 else None
+    conexion.close()
+    if not res:
+        raise HTTPException(status_code=404, detail="Entrega no encontrada para este pedido.")
+    return res
 
 @app.post("/pedidos/{pedido_id}/asignar-fecha", summary="Asignar o cambiar la fecha de entrega")
 def asignar_fecha_entrega(pedido_id: int, fecha: str, usuario_sesion: dict = Depends(usuario_actual)):
@@ -793,6 +847,10 @@ def asignar_fecha_entrega(pedido_id: int, fecha: str, usuario_sesion: dict = Dep
         conexion.commit()
         conexion.close()
         return {"mensaje": f"Fecha de entrega del pedido {pedido_id} actualizada a {fecha}."}
+    except HTTPException as he:
+        conexion.rollback()
+        conexion.close()
+        raise he
     except Exception as e:
         conexion.rollback()
         conexion.close()
@@ -807,13 +865,13 @@ def cambiar_estado_pedido(pedido_id: int, datos: CambioEstadoModel, usuario_sesi
     TRANS = {
         "RECIBIDO": ["VALIDADO", "EXCEPCION", "CANCELADO"],
         "VALIDADO": ["PREPARADO", "EXCEPCION", "CANCELADO"],
-        "PREPARADO": ["FACTURADO", "EXCEPCION"],
-        "FACTURADO": ["ARMADO", "EXCEPCION"],
+        "PREPARADO": ["FACTURADO", "EXCEPCION"], # FACTURADO debe ir por /facturar
+        "FACTURADO": ["ARMADO", "EXCEPCION"],     # ARMADO debe ir por /armar
         "ARMADO": ["CARGADO", "EXCEPCION"],
         "CARGADO": ["EN_REPARTO", "EXCEPCION"],
         "EN_REPARTO": ["ENTREGADO", "EXCEPCION"],
         "ENTREGADO": ["CERRADO"],
-        "EXCEPCION": ["RECIBIDO", "VALIDADO", "PREPARADO", "FACTURADO", "ARMADO", "CARGADO", "EN_REPARTO"]
+        "EXCEPCION": ["RECIBIDO", "VALIDADO", "PREPARADO", "FACTURADO", "ARMADO", "CARGADO", "EN_REPARTO", "CANCELADO"]
     }
     try:
         cursor.execute("SELECT estado FROM pedidos WHERE id = ?", (pedido_id,))
@@ -827,10 +885,15 @@ def cambiar_estado_pedido(pedido_id: int, datos: CambioEstadoModel, usuario_sesi
         if nuevo not in TRANS.get(est_act, []):
             raise HTTPException(status_code=400, detail=f"Transición inválida: {est_act} -> {nuevo}")
         
+        # Sensores de Regla de Estado
+        if nuevo == "FACTURADO":
+            raise HTTPException(status_code=400, detail="Para facturar, usá POST /pedidos/{id}/facturar.")
+        if nuevo == "ARMADO":
+            raise HTTPException(status_code=400, detail="Para armar, usá POST /pedidos/{id}/armar.")
+
         if nuevo == "PREPARADO":
             cursor.execute("SELECT COUNT(*) as count FROM pedido_historial_estados WHERE pedido_id = ? AND estado_nuevo = 'PREPARADO'", (pedido_id,))
             ya_preparado = cursor.fetchone()["count"] > 0
-            
             if not ya_preparado:
                 cursor.execute("SELECT producto_id, cantidad FROM detalle_pedidos WHERE pedido_id = ?", (pedido_id,))
                 for d in cursor.fetchall():
@@ -864,6 +927,14 @@ def seguimiento_pedido(pedido_id: int, usuario_sesion: dict = Depends(usuario_ac
     conexion = obtener_conexion()
     cursor = conexion.cursor()
     try:
+        cursor.execute("SELECT usuario_id FROM pedidos WHERE id = ?", (pedido_id,))
+        pedido_row = cursor.fetchone()
+        if not pedido_row:
+            raise HTTPException(status_code=404, detail="Pedido no encontrado.")
+            
+        if usuario_sesion["rol"] == "cliente" and pedido_row["usuario_id"] != usuario_sesion["id"]:
+            raise HTTPException(status_code=403, detail="No tenés permiso para ver este pedido.")
+
         cursor.execute("SELECT estado_anterior, estado_nuevo, fecha, cambiado_por FROM pedido_historial_estados WHERE pedido_id = ? ORDER BY fecha ASC", (pedido_id,))
         hist = []
         for f in cursor.fetchall():
@@ -872,13 +943,13 @@ def seguimiento_pedido(pedido_id: int, usuario_sesion: dict = Depends(usuario_ac
             hist.append(h)
         conexion.close()
         return hist
+    except HTTPException as he:
+        conexion.close()
+        raise he
     except Exception as e:
         conexion.close()
         raise HTTPException(status_code=500, detail=str(e))
 
-# ==========================================
-# EXCEPCIONES
-# ==========================================
 @app.post("/excepciones", summary="Registrar una excepción")
 def crear_excepcion(datos: ExcepcionModel, usuario_sesion: dict = Depends(usuario_actual)):
     if usuario_sesion["rol"] not in ("admin", "agente"):
@@ -891,6 +962,9 @@ def crear_excepcion(datos: ExcepcionModel, usuario_sesion: dict = Depends(usuari
         if not pedido:
             raise HTTPException(status_code=404, detail="Pedido no encontrado.")
         
+        if pedido["estado"] in ("CERRADO", "CANCELADO"):
+            raise HTTPException(status_code=400, detail="No se puede abrir una excepción sobre un pedido ya cerrado o cancelado.")
+            
         cursor.execute("INSERT INTO excepciones (pedido_id, tipo, motivo, estado) VALUES (?, ?, ?, 'ABIERTA')", (datos.pedido_id, datos.tipo, datos.motivo))
         cursor.execute("UPDATE pedidos SET estado = 'EXCEPCION' WHERE id = ?", (datos.pedido_id,))
         cursor.execute("INSERT INTO pedido_historial_estados (pedido_id, estado_anterior, estado_nuevo, cambiado_por) VALUES (?, ?, 'EXCEPCION', ?)", (datos.pedido_id, pedido["estado"], usuario_sesion["email"]))
@@ -898,10 +972,10 @@ def crear_excepcion(datos: ExcepcionModel, usuario_sesion: dict = Depends(usuari
         excepcion_id = cursor.lastrowid
         conexion.close()
         return {"mensaje": "Excepción registrada.", "excepcion_id": excepcion_id}
-    except HTTPException:
+    except HTTPException as he:
         conexion.rollback()
         conexion.close()
-        raise
+        raise he
     except Exception as e:
         conexion.rollback()
         conexion.close()
@@ -925,18 +999,26 @@ def resolver_excepcion(excepcion_id: int, usuario_sesion: dict = Depends(usuario
     conexion = obtener_conexion()
     cursor = conexion.cursor()
     try:
+        cursor.execute("SELECT estado FROM excepciones WHERE id = ?", (excepcion_id,))
+        exc = cursor.fetchone()
+        if not exc:
+            raise HTTPException(status_code=404, detail="Excepción no encontrada.")
+        if exc["estado"] == "RESUELTA":
+            raise HTTPException(status_code=400, detail="Esta excepción ya fue resuelta.")
+
         cursor.execute("UPDATE excepciones SET estado = 'RESUELTA', resuelta_por = ? WHERE id = ?", (usuario_sesion["email"], excepcion_id))
         conexion.commit()
         conexion.close()
         return {"mensaje": "Excepción resuelta."}
+    except HTTPException as he:
+        conexion.rollback()
+        conexion.close()
+        raise he
     except Exception as e:
         conexion.rollback()
         conexion.close()
         raise HTTPException(status_code=500, detail=str(e))
 
-# ==========================================
-# NUEVOS ENDPOINTS DE LOGÍSTICA
-# ==========================================
 @app.post("/pedidos/{pedido_id}/facturar", summary="Emitir factura")
 def facturar_pedido(pedido_id: int, usuario_sesion: dict = Depends(usuario_actual)):
     if usuario_sesion["rol"] not in ("admin", "agente"):
@@ -1019,7 +1101,7 @@ def planificar_ruta(datos: PlanificacionRutaModel, usuario_sesion: dict = Depend
             cursor.execute("SELECT estado FROM pedidos WHERE id = ?", (pid,))
             p = cursor.fetchone()
             if not p or p["estado"] != "ARMADO":
-                raise HTTPException(status_code=400, detail=f"Pedido {pid} no está ARMADO.")
+                raise HTTPException(status_code=400, detail=f"Pedido {pid} no está ARMADO (Estado actual: {p['estado'] if p else 'No existe'}).")
             ord_ent = datos.orden_entrega[i] if i < len(datos.orden_entrega) else 0
             cursor.execute("INSERT INTO rutas_paradas (camion_id, fecha, pedido_id, orden_carga, orden_entrega) VALUES (?, ?, ?, ?, ?)", (datos.camion_id, fecha, pid, i + 1, ord_ent))
             cursor.execute("UPDATE pedidos SET estado = 'CARGADO' WHERE id = ?", (pid,))
@@ -1057,6 +1139,12 @@ def registrar_entrega(pedido_id: int, datos: EntregaModel, usuario_sesion: dict 
         hora = datetime.now().strftime('%H:%M:%S')
         cursor.execute("INSERT INTO entregas (parada_id, hora, receptor, resultado, incidencia, comprobante) VALUES (?, ?, ?, ?, ?, ?)", (par_id, hora, datos.receptor, datos.resultado, datos.incidencia, datos.comprobante))
         nuevo = 'ENTREGADO' if datos.resultado == 'ENTREGADO' else 'EXCEPCION'
+        
+        # Sensor: si la entrega falla, guardamos la incidencia como una excepción formal
+        if nuevo == 'EXCEPCION':
+            motivo_exc = datos.incidencia if datos.incidencia else "Entrega fallida sin detalle"
+            cursor.execute("INSERT INTO excepciones (pedido_id, tipo, motivo, estado) VALUES (?, 'ENTREGA', ?, 'ABIERTA')", (pedido_id, motivo_exc))
+
         cursor.execute("UPDATE pedidos SET estado = ? WHERE id = ?", (nuevo, pedido_id))
         cursor.execute("INSERT INTO pedido_historial_estados (pedido_id, estado_anterior, estado_nuevo, cambiado_por) VALUES (?, ?, ?, ?)", (pedido_id, p["estado"], nuevo, usuario_sesion["email"]))
         conexion.commit()
@@ -1071,9 +1159,6 @@ def registrar_entrega(pedido_id: int, datos: EntregaModel, usuario_sesion: dict 
         conexion.close()
         raise HTTPException(status_code=500, detail=str(e))
 
-# ==========================================
-# ALERTAS DE STOCK
-# ==========================================
 @app.get("/alertas-stock/pendientes", summary="Alertas de stock bajo")
 def obtener_alertas_pendientes(usuario_sesion: dict = Depends(usuario_actual)):
     if usuario_sesion["rol"] not in ("admin", "agente"):
@@ -1096,9 +1181,6 @@ def resolver_alerta(alerta_id: int, usuario_sesion: dict = Depends(usuario_actua
     conexion.close()
     return {"mensaje": "Alerta resuelta."}
 
-# ==========================================
-# EVENTOS
-# ==========================================
 @app.post("/eventos", summary="Registrar un evento")
 def crear_evento(evento: EventoModel, usuario_sesion: dict = Depends(usuario_actual)):
     if usuario_sesion["rol"] not in ("admin", "agente"):
@@ -1118,9 +1200,6 @@ def crear_evento(evento: EventoModel, usuario_sesion: dict = Depends(usuario_act
         conexion.close()
         raise HTTPException(status_code=500, detail=str(e))
 
-# ==========================================
-# COMPATIBILIDAD
-# ==========================================
 @app.post("/pedidos/{pedido_id}/preparar")
 def preparar_pedido(pedido_id: int, usuario_sesion: dict = Depends(usuario_actual)):
     return cambiar_estado_pedido(pedido_id, CambioEstadoModel(nuevo_estado="PREPARADO"), usuario_sesion)
