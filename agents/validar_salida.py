@@ -8,50 +8,50 @@ import re
 import sys
 import json
 
-# Formatos esperados por tipo de agente
+# Formatos esperados por tipo de agente (acepta con o sin emojis)
 FORMATOS = {
     "recepcionista": {
-        "veredicto": r"VEREDICTO:\s*(✅ APROBADO|❌ EXCEPCION)",
+        "veredicto": r"VEREDICTO:\s*(?:✅\s*)?(APROBADO|❌\s*EXCEPCION)",
         "campos": ["PEDIDOS_VALIDADOS", "TOTAL"],
     },
     "validador_precios": {
-        "veredicto": r"VEREDICTO:\s*(✅ APROBADO|❌ EXCEPCION)",
+        "veredicto": r"VEREDICTO:\s*(?:✅\s*)?(APROBADO|❌\s*EXCEPCION)",
         "campos": ["OBSERVACIONES"],
     },
     "validador_credito": {
-        "veredicto": r"VEREDICTO:\s*(✅ APROBADO|❌ EXCEPCION)",
+        "veredicto": r"VEREDICTO:\s*(?:✅\s*)?(APROBADO|❌\s*EXCEPCION)",
         "campos": ["OBSERVACIONES"],
     },
     "preparador": {
-        "veredicto": r"VEREDICTO:\s*(✅ APROBADO)",
+        "veredicto": r"VEREDICTO:\s*(?:✅\s*)?(APROBADO)",
         "campos": ["PEDIDOS_PREPARADOS"],
     },
     "facturador": {
-        "veredicto": r"VEREDICTO:\s*(✅ APROBADO)",
+        "veredicto": r"VEREDICTO:\s*(?:✅\s*)?(APROBADO)",
         "campos": ["FACTURAS_EMITIDAS"],
     },
     "planificador": {
-        "veredicto": r"VEREDICTO:\s*(✅ APROBADO)",
+        "veredicto": r"VEREDICTO:\s*(?:✅\s*)?(APROBADO)",
         "campos": ["PEDIDOS_EN_RUTA", "CAMION"],
     },
     "auditor": {
-        "veredicto": r"VEREDICTO:\s*(✅ APROBADO|⚠️ APROBADO CON OBSERVACIONES|❌ RECHAZADO)",
+        "veredicto": r"VEREDICTO:\s*(?:✅\s*)?(APROBADO|⚠️\s*APROBADO CON OBSERVACIONES|❌\s*RECHAZADO)",
         "campos": ["CHEQUEOS", "OBSERVACIONES"],
     },
     "registro": {
-        "veredicto": r"VEREDICTO:\s*(✅ APROBADO)",
+        "veredicto": r"VEREDICTO:\s*(?:✅\s*)?(APROBADO)",
         "campos": ["EVENTO_ID"],
     },
     "gestor_precios": {
-        "veredicto": r"VEREDICTO:\s*(✅ APROBADO)",
+        "veredicto": r"VEREDICTO:\s*(?:✅\s*)?(APROBADO)",
         "campos": ["PRODUCTOS_ACTUALIZADOS"],
     },
     "reposicion": {
-        "veredicto": r"VEREDICTO:\s*(✅ APROBADO)",
+        "veredicto": r"VEREDICTO:\s*(?:✅\s*)?(APROBADO)",
         "campos": ["ALERTAS_RESUELTAS", "MENSAJE"],
     },
     "simulador_humano": {
-        "veredicto": r"VEREDICTO:\s*(✅ APROBADO)",
+        "veredicto": r"VEREDICTO:\s*(?:✅\s*)?(APROBADO)",
         "campos": ["PEDIDOS_ARMADOS", "PEDIDOS_ENTREGADOS"],
     },
 }

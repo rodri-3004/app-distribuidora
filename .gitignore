@@ -1,1 +1,32 @@
+# Base de datos local
 base_datos/distribuidora.db
+*.db
+*.sqlite3
+
+# Entornos virtuales de Python
+.venv/
+venv/
+env/
+ENV/
+
+# Caché de Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Pytest_cache/
+
+# Archivos de seguridad y entorno
+.env
+.jwt_secret
+*.secret
+
+# Node.js y Frontend
+node_modules/
+dist/
+.vite/
+*.local
+
+# Configuración local de Paseo
+.paseo/
+config.json
