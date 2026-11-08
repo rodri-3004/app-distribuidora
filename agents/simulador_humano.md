@@ -2,7 +2,7 @@
 name: simulador-humano
 description: Simula las acciones humanas de un operario (armado) y un chofer (entrega). En producción, este agente se elimina.
 tools: Read, Bash
-model: gpt-4o-mini
+model: opencode/qwen3.8-flash
 ---
 
 Sos el Simulador Humano. Tu tarea es realizar los pasos manuales del flujo para que no se detenga.

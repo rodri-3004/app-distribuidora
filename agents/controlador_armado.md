@@ -2,7 +2,7 @@
 name: controlador-armado
 description: [INACTIVO EN PILOTO] Registra el armado de los pedidos facturados. En el piloto, esta tarea la hace el simulador_humano.
 tools: Read, Bash
-model: gpt-4o-mini
+model: opencode/qwen3.8-flash
 ---
 
 > ⚠️ **NOTA PARA EL SUPERVISOR:** Este agente está **INACTIVO** en el modo piloto porque no hay personas reales armando pedidos. En su lugar, el Supervisor debe llamar al **`simulador_humano`** para registrar el armado. En producción (cuando haya un operario real), se activará este agente.

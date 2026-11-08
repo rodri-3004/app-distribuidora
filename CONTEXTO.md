@@ -1,6 +1,6 @@
 # CONTEXTO.md · Distribuidora de productos de limpieza (sistema multiagente)
 
-> Archivo de contexto del proyecto (versión 4.3). Todo asistente o agente que trabaje en este proyecto lo lee primero.
+> Archivo de contexto del proyecto (versión 4.4). Todo asistente o agente que trabaje en este proyecto lo lee primero.
 > Idioma de trabajo: español (código, nombres de tablas y mensajes).
 
 ## 1. Objetivo
@@ -90,7 +90,8 @@ Es una **prueba piloto** pensada para un caso real. La plataforma base ya está 
 - **D8 · Un CUIT/DNI = un cliente = un dueño.**
 - **D9 · Stock con reserva** (decidido e implementado).
 - **D10 · Simulación de operario y chofer:** como el piloto no tiene personas reales en esos roles, se creó un **Agente Simulador** con rol `admin` que ejecuta los endpoints de armar y entregar. En el harness de Paseo, este agente está representado por el archivo `simulador_humano.md`. Los archivos `controlador_armado.md` y `seguimiento.md` quedan inactivos en el piloto y se activan en producción.
-- **D11 · IVA en facturación:** el precio del producto en el pedido es el subtotal. Al facturar (`POST /pedidos/{id}/facturar`), la API calcula el 21% de IVA y lo suma al total de la factura. El pedido guarda el total sin IVA, y la factura el total con IVA. (Si en producción los precios de lista incluyen IVA, esta lógica deberá invertirse).
+- **D11 · IVA en facturación:** el precio del producto en el pedido es el subtotal. Al facturar (`POST /pedidos/{id}/facturar`), la API calcula el 21% de IVA y lo suma al total de la factura. El pedido guarda el total sin IVA, y la factura el total con IVA.
+- **D12 · Routing de Modelos:** Se asignaron modelos gratuitos (DeepSeek, Qwen, Muse) según la complejidad de la tarea de cada agente, para optimizar el consumo de tokens y asegurar el rendimiento en el piloto.
 
 ## 9. Base de datos (16 tablas)
 Tablas del plan: `usuarios`, `clientes`, `movimientos_cuenta`, `productos`, `precios_historial`, `pedidos`, `detalle_pedidos`, `facturas`, `armados`, `camiones`, `rutas_paradas`, `entregas`, `eventos_log`, `excepciones`.
@@ -99,13 +100,10 @@ Tablas agregadas en la implementación:
 - `pedido_historial_estados`: registra cada cambio de estado con fecha y autor.
 - `alertas_stock`: registra productos con stock por debajo del mínimo.
 
-Columnas agregadas respecto de la especificación original: `clientes.usuario_dueno`, `clientes.telefono`, `clientes.condicion_fiscal`, `clientes.medio_pago`, `productos.categoria`, `productos.imagen_url`, `productos.stock_minimo`, `pedidos.usuario_id`, `pedidos.fecha_entrega`, `pedidos.estado_anterior`.
-
 ## 10. Planillas de datos
 - `clientes.xlsx` y `productos.xlsx` (hoja `clientes` / `productos`, más una hoja "Instrucciones").
 - Se cargan con `importar_excel.py` o con los endpoints `/clientes/importar-excel` y `/productos/importar-excel`.
 - Clave de cada planilla: `cuit` (clientes) y `codigo` (productos).
-- El endpoint de productos solo actualiza precios (R10).
 
 ## 11. Convenciones
 - Nombres de tablas y campos en español, `snake_case`.
@@ -115,43 +113,20 @@ Columnas agregadas respecto de la especificación original: `clientes.usuario_du
 ## 12. Estructura de carpetas
 APP-DISTRIBUIDORA-PROCESOS/
 ├── CONTEXTO.md
+├── PROGRESS.md
+├── features.json
+├── check.py
 ├── base_datos/
-│ ├── crear_base.py
-│ ├── agregar_historial_estados.py
-│ ├── agregar_rol_agente.py
-│ ├── agregar_tabla_alertas.py
-│ ├── cargar_camiones.py
-│ ├── crear_agentes_paseo.py
-│ ├── crear_simulador.py
-│ ├── reconciliar_stock.py
-│ ├── distribuir_fechas_entrega.py
-│ ├── resetear_pedidos_a_pendientes.py
-│ └── distribuidora.db
+│ ├── (scripts de base de datos)
 ├── api/
-│ └── main.py (FastAPI)
+│ └── main.py
 ├── frontend/
-│ ├── src/
-│ │ ├── App.tsx
-│ │ ├── AuthView.tsx
-│ │ ├── App.css
-│ │ └── index.css
-│ └── package.json
+│ ├── (archivos de React)
 ├── agentes/
 │ ├── supervisor.md
 │ ├── playbook.md
-│ ├── recepcionista.md
-│ ├── validador_precios.md
-│ ├── validador_credito.md
-│ ├── preparador.md
-│ ├── facturador.md
-│ ├── controlador_armado.md (inactivo en piloto)
-│ ├── planificador.md
-│ ├── seguimiento.md (inactivo en piloto)
-│ ├── auditor.md
-│ ├── registro.md
-│ ├── gestor_precios.md
-│ ├── reposicion.md
-│ ├── simulador_humano.md
+│ ├── loop.md
+│ ├── (13 archivos .md de agentes)
 │ └── validar_salida.py
 ├── tests/
 │ └── test_flujo_completo.py
@@ -162,52 +137,37 @@ APP-DISTRIBUIDORA-PROCESOS/
 └── bitacora.md
 
 ## 13. Endpoints de la API
-
 ### Autenticación
-- `POST /registro`, `POST /activar`, `POST /login`, `GET /yo`
-- `POST /recuperar-password`, `POST /resetear-password`, `POST /cambiar-password`
-
+- `POST /registro`, `POST /activar`, `POST /login`, `GET /yo`, `POST /recuperar-password`, `POST /resetear-password`, `POST /cambiar-password`
 ### Productos y Clientes
 - `GET /productos`, `GET /categorias`, `POST /productos/importar-excel`
 - `GET /clientes`, `POST /clientes`, `POST /clientes/importar-excel`, `PUT /clientes/{id}`, `DELETE /clientes/{id}`
-
 ### Pedidos
 - `POST /pedidos`, `PATCH /pedidos/{id}/estado`, `GET /pedidos/{id}/seguimiento`, `GET /pedidos/todos`
 - `GET /pedidos?estado={estado}`, `GET /pedidos/{id}`, `GET /pedidos/entrega/{fecha}`
-- `POST /pedidos/{id}/asignar-fecha`
-- `GET /pedidos/{id}/factura`, `GET /pedidos/{id}/entrega`
-
+- `POST /pedidos/{id}/asignar-fecha`, `GET /pedidos/{id}/factura`, `GET /pedidos/{id}/entrega`
 ### Logística
-- `POST /pedidos/{id}/facturar`
-- `POST /pedidos/{id}/armar`
-- `POST /rutas/planificar`
-- `POST /entregas/{id}`
-
+- `POST /pedidos/{id}/facturar`, `POST /pedidos/{id}/armar`, `POST /rutas/planificar`, `POST /entregas/{id}`
 ### Excepciones
-- `POST /excepciones`
-- `GET /excepciones`
-- `PATCH /excepciones/{id}/resolver`
-
+- `POST /excepciones`, `GET /excepciones`, `PATCH /excepciones/{id}/resolver`
 ### Alertas de Stock
-- `GET /alertas-stock/pendientes`
-- `PATCH /alertas-stock/{id}/resolver`
-
+- `GET /alertas-stock/pendientes`, `PATCH /alertas-stock/{id}/resolver`
 ### Eventos
 - `POST /eventos`
 
 ## 14. Cómo correr y probar
-- Instalar dependencias de la API: `pip install fastapi uvicorn pandas openpyxl reportlab email-validator python-multipart pyjwt bcrypt`
-- API: `uvicorn main:app --reload --port 8001` desde la carpeta `api` (documentación en `http://127.0.0.1:8001/docs`).
-- Frontend: `npm run dev` desde `frontend` (`http://localhost:5173`).
-- Ejecutar tests de integración: `python tests/test_flujo_completo.py` (con la API corriendo).
-- Reiniciar datos de prueba: `python base_datos/resetear_pedidos_a_pendientes.py` y luego `python base_datos/reconciliar_stock.py`.
+- Instalar dependencias: `pip install fastapi uvicorn pandas openpyxl reportlab email-validator python-multipart pyjwt bcrypt requests`
+- API: `uvicorn main:app --reload --port 8001`.
+- Frontend: `npm run dev` en `frontend`.
+- Ejecutar tests de integración: `python tests/test_flujo_completo.py`.
+- Chequeo final del harness: `python check.py`.
 
 ## 15. Fase actual
-**Fase 1 · Agentes en Paseo.sh.** La plataforma está 100% completa y funcional. Las identidades de los 13 agentes están creadas (12 agentes + 1 simulador). Los archivos `.md` de instrucciones están en la carpeta `agentes/`, incluyendo el `playbook.md`. El harness cuenta con sensores (test de integración y validador de salida). El siguiente paso es abrir Paseo.sh, cargar la carpeta del proyecto y darle la orden al Supervisor para que empiece a operar.
+**Fase 1 · Agentes en Paseo.sh.** La plataforma está 100% completa y funcional. Las identidades de los 13 agentes están creadas. Los archivos `.md` de instrucciones están en la carpeta `agentes/` con sus modelos gratuitos asignados (routing). El harness cuenta con sensores (test de integración y validador de salida) y memoria (PROGRESS.md, features.json). El siguiente paso es abrir Paseo.sh, cargar la carpeta del proyecto y darle la orden al Supervisor para que empiece a operar.
 
 ## 16. Seguridad: notas del piloto local
-- `/recuperar-password` y `/registro` devuelven el código en la respuesta (`token_debug`) y `/activar` no verifica el código: aceptable solo en la PC local; resolver antes de usar datos reales.
+- `/recuperar-password` y `/registro` devuelven el código en la respuesta (`token_debug`) y `/activar` no verifica el código: aceptable solo en la PC local.
 - Los nombres de dueño son texto (`usuario_dueno`), sin clave foránea.
 - El agente simulador tiene rol `admin` para poder hacer de operario y chofer. En producción, se elimina.
-- **Validaciones de API:** Se agregaron chequeos para que los clientes no puedan ver pedidos ajenos, modificar clientes de otros dueños o crear pedidos a nombre de otros. Los agentes y admins tienen acceso total.
-- **Claves de agentes:** Las claves de los agentes están definidas en el script `base_datos/crear_agentes_paseo.py` (ej. `Super123!`, `Recepcion123!`, etc.) y encriptadas en la base de datos con bcrypt.
+- **Validaciones de API:** Se agregaron chequeos para que los clientes no puedan ver pedidos ajenos, modificar clientes de otros dueños o crear pedidos a nombre de otros.
+- **Claves de agentes:** Las claves de los agentes están definidas en el script `base_datos/crear_agentes_paseo.py` y encriptadas en la base de datos con bcrypt.

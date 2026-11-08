@@ -1,9 +1,16 @@
 import requests
 import sys
 import time
+import sqlite3
+from pathlib import Path
 
 # URL base de tu API local
 BASE_URL = "http://127.0.0.1:8001"
+
+# Ruta a la base de datos
+RUTA_DB = Path(__file__).parent.parent / "base_datos" / "distribuidora.db"
+if not RUTA_DB.exists():
+    RUTA_DB = Path(__file__).parent.parent / "api" / "distribuidora.db"
 
 def log(mensaje, exito=True):
     prefijo = "✅" if exito else "❌"
@@ -16,6 +23,41 @@ def obtener_token(email, clave):
     if res.status_code != 200:
         log(f"Error de login para {email}: {res.text}", False)
     return res.json()["access_token"]
+
+def limpiar_pedido_de_prueba(pedido_id, producto_id, cantidad, stock_inicial):
+    """Limpia la base de datos y el stock después de la prueba."""
+    print("\n🧹 Limpiando datos de la prueba...")
+    try:
+        conexion = sqlite3.connect(RUTA_DB)
+        cursor = conexion.cursor()
+        
+        # 1. Borrar detalles del pedido
+        cursor.execute("DELETE FROM detalle_pedidos WHERE pedido_id = ?", (pedido_id,))
+        # 2. Borrar historial
+        cursor.execute("DELETE FROM pedido_historial_estados WHERE pedido_id = ?", (pedido_id,))
+        # 3. Borrar factura (si se creó)
+        cursor.execute("DELETE FROM facturas WHERE pedido_id = ?", (pedido_id,))
+        # 4. Borrar movimientos de cuenta
+        cursor.execute("DELETE FROM movimientos_cuenta WHERE pedido_id = ?", (pedido_id,))
+        # 5. Borrar armado (si se creó)
+        cursor.execute("DELETE FROM armados WHERE pedido_id = ?", (pedido_id,))
+        # 6. Borrar paradas de ruta y entregas
+        cursor.execute("SELECT id FROM rutas_paradas WHERE pedido_id = ?", (pedido_id,))
+        paradas = cursor.fetchall()
+        for p in paradas:
+            cursor.execute("DELETE FROM entregas WHERE parada_id = ?", (p[0],))
+        cursor.execute("DELETE FROM rutas_paradas WHERE pedido_id = ?", (pedido_id,))
+        # 7. Borrar el pedido final
+        cursor.execute("DELETE FROM pedidos WHERE id = ?", (pedido_id,))
+        
+        # 8. Restaurar el stock físico del producto
+        cursor.execute("UPDATE productos SET stock_fisico = ? WHERE id = ?", (stock_inicial, producto_id))
+        
+        conexion.commit()
+        conexion.close()
+        print("✅ Base de datos y stock restaurados a su estado original.")
+    except Exception as e:
+        print(f"⚠️ Error al limpiar la base de datos: {e}. (El pedido de prueba quedó en la base).")
 
 def test_flujo_completo():
     print("\n🚀 INICIANDO TEST DE INTEGRACIÓN (HAPPY PATH)\n")
@@ -71,16 +113,12 @@ def test_flujo_completo():
     for estado in estados_flujo:
         time.sleep(0.5) # Pequeña pausa para no saturar la API
         if estado == "FACTURADO":
-            # Para facturar hay un endpoint específico
             res = requests.post(f"{BASE_URL}/pedidos/{pedido_id}/facturar", headers=headers)
         elif estado == "ARMADO":
-            # Para armar hay un endpoint específico
             res = requests.post(f"{BASE_URL}/pedidos/{pedido_id}/armar", json={"bultos": 1, "resultado": "OK"}, headers=headers)
         elif estado == "ENTREGADO":
-            # Para entregar se usa el endpoint de entregas
             res = requests.post(f"{BASE_URL}/entregas/{pedido_id}", json={"receptor": "Test Bot", "resultado": "ENTREGADO"}, headers=headers)
         else:
-            # El resto de estados se cambian con el PATCH genérico
             res = requests.patch(f"{BASE_URL}/pedidos/{pedido_id}/estado", json={"nuevo_estado": estado}, headers=headers)
         
         if res.status_code not in [200, 201]:
@@ -112,10 +150,13 @@ def test_flujo_completo():
         log(f"Error en stock. Esperado: {stock_esperado}, Real: {prod_final['stock_fisico']}", False)
 
     # C. Verificar stock reservado (debería ser 0, porque ya se preparó)
-    if prod_final["stock_reservado"] == prod["stock_reservado"]: # Debería volver a su estado original
+    if prod_final["stock_reservado"] == prod["stock_reservado"]:
         log(f"Stock reservado volvió a 0 correctamente.")
     else:
         log(f"Error en stock reservado. Quedó en {prod_final['stock_reservado']}", False)
+
+    # 6. LIMPIEZA (El paso nuevo que borra todo)
+    limpiar_pedido_de_prueba(pedido_id, prod["id"], cantidad_a_comprar, stock_fisico_inicial)
 
     print("\n🎉 TEST COMPLETADO CON ÉXITO. El flujo y el stock están perfectos.\n")
 

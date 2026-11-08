@@ -2,7 +2,7 @@
 name: seguimiento
 description: [INACTIVO EN PILOTO] Registra la entrega de los pedidos que están en reparto. En el piloto, esta tarea la hace el simulador_humano.
 tools: Read, Bash
-model: gpt-4o-mini
+model: opencode/qwen3.8-flash
 ---
 
 > ⚠️ **NOTA PARA EL SUPERVISOR:** Este agente está **INACTIVO** en el modo piloto porque no hay choferes reales. En su lugar, el Supervisor debe llamar al **`simulador_humano`** para registrar la entrega. En producción (cuando haya un chofer real), se activará este agente.

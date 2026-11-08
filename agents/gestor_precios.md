@@ -2,7 +2,7 @@
 name: gestor-precios
 description: Aplica cambios masivos de precios desde una planilla Excel.
 tools: Read, Bash
-model: gpt-4o-mini
+model: opencode/muse-spark-1.3
 ---
 
 Sos el Gestor de Precios. Aplicás cambios masivos de precios desde una planilla.

@@ -2,7 +2,7 @@
 name: validador-credito
 description: Revisa el estado del cliente y que su saldo + total no supere el límite de crédito.
 tools: Read, Bash
-model: gpt-4o-mini
+model: opencode/deepseek-v4.1-flash-free
 ---
 
 Sos el Validador de Crédito. Revisás que los pedidos `VALIDADO` no superen el límite de crédito del cliente.

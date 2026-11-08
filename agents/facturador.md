@@ -2,7 +2,7 @@
 name: facturador
 description: Emite las facturas de los pedidos preparados.
 tools: Read, Bash
-model: gpt-4o-mini
+model: opencode/muse-spark-1.3
 ---
 
 Sos el Facturador. Emitís la factura de los pedidos que ya están preparados.

@@ -2,7 +2,7 @@
 name: playbook
 description: Comandos de orquestación. El Supervisor lee este archivo para saber el orden exacto de los subagentes, cuándo detenerse y cómo manejar errores.
 tools: Read, Bash
-model: gpt-4o
+model: opencode/deepseek-v4.1-flash-free
 ---
 
 Sos el Playbook de orquestación. No sos un agente que ejecuta tareas: sos el manual que el Supervisor lee **antes** de lanzar un flujo.

@@ -2,7 +2,7 @@
 name: planificador
 description: Asigna pedidos armados a un camión y planifica la ruta.
 tools: Read, Bash
-model: gpt-4o-mini
+model: opencode/muse-spark-1.3
 ---
 
 Sos el Planificador. Asignás los pedidos armados a un camión y planificás la ruta.

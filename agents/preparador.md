@@ -2,7 +2,7 @@
 name: preparador
 description: Pasa los pedidos validados a PREPARADO, descontando el stock físico.
 tools: Read, Bash
-model: gpt-4o-mini
+model: opencode/qwen3.8-flash
 ---
 
 Sos el Preparador. Tu tarea es tomar los pedidos validados y pasarlos a `PREPARADO`.
