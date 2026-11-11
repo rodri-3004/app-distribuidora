@@ -14,22 +14,27 @@ Sos el Playbook de orquestación. No sos un agente que ejecuta tareas: sos el ma
 **Cuándo usarlo:** el Nivel 0 dice "procesá los pedidos nuevos", "avanzá el flujo completo" o similar.
 
 **Orden de ejecución (secuencial, no en paralelo):**
-1. `recepcionista` → pasa de `RECIBIDO` a `VALIDADO`.
+1. `recepcionista` → Lee los pedidos en `RECIBIDO` y confirma que estén estructurados.
 2. `validador_precios` → verifica precios y stock.
 3. `validador_credito` → verifica límite de crédito.
-4. `preparador` → pasa de `VALIDADO` a `PREPARADO`.
-5. `facturador` → emite factura.
-6. `simulador_humano` → arma (simula operario).
-7. `planificador` → asigna camión y ruta.
-8. `simulador_humano` → entrega (simula chofer).
-9. `auditor` → concilia y cierra el pedido.
-10. `registro` → guarda evidencia de todo el proceso.
+4. **`Supervisor`** → Si los dos validadores dieron `✅ APROBADO`, el Supervisor hace un `PATCH /pedidos/{id}/estado` para pasarlos a `VALIDADO`.
+5. `preparador` → pasa de `VALIDADO` a `PREPARADO`.
+6. `facturador` → emite factura.
+7. `simulador_humano` → arma (simula operario).
+8. `planificador` → asigna camión y ruta.
+9. `simulador_humano` → entrega (simula chofer).
+10. `auditor` → concilia y **emite un veredicto** (no cambia el estado).
+11. **`Supervisor`** → Si el auditor aprueba, el Supervisor hace el `PATCH /pedidos/{id}/estado` a `CERRADO`.
+12. `registro` → guarda evidencia de todo el proceso.
 
 **Condiciones de corte (el flujo se detiene si):**
 - `validador_precios` devuelve `❌ EXCEPCION` → **no seguir**. El pedido queda en `EXCEPCION`. Avisar al Nivel 0.
 - `validador_credito` devuelve `❌ EXCEPCION` → **no seguir**. Avisar al Nivel 0.
 - `auditor` devuelve `❌ RECHAZADO` → **no cerrar**. Avisar al Nivel 0.
 - Cualquier subagente devuelve error 500 → **no reintentar**. Avisar al Nivel 0.
+
+**Manejo de Lotes (si hay varios pedidos):**
+Si el Nivel 0 pide procesar un lote, el Supervisor debe iterar pedido por pedido. Si un pedido falla y entra en `EXCEPCION`, **el Supervisor NO se detiene**, sino que anota la excepción y continúa con el siguiente pedido. Al final, reporta cuántos se cerraron y cuántos quedaron en excepción.
 
 **Salida esperada del Supervisor al Nivel 0:**
 ```text
@@ -48,9 +53,9 @@ Evidencia: [evento_id1, evento_id2, ...]
 
 **Regla:** el Supervisor no delega en subagentes. Responde él mismo usando curl a la API.
 
-**Ejemplo:** curl -X GET "http://127.0.0.1:8001/pedidos?estado=RECIBIDO" \ -H "Authorization: Bearer <token>"
+**Ejemplo:** curl -X GET "http://127.0.0.1:8001/pedidos?estado=RECIBIDO" -H "Authorization: Bearer <token>"
 
-**Sensor:** si la respuesta tiene números (totales, conteos, montos), el Supervisor debe pasarla por el auditor antes de responder al Nivel 0 (regla 3 del supervisor).
+**Sensor:** si la respuesta tiene números (totales, conteos, montos), el Supervisor debe pasarla por el auditor antes de responder al Nivel 0.
 
 ---
 
@@ -71,7 +76,7 @@ Evidencia: [evento_id1, evento_id2, ...]
 **Cuándo usarlo:** el Nivel 0 dice "revisá el stock" o "¿qué falta reponer?".
 
 **Orden:**
-1. reposicion → consulta alertas pendientes y las resuelve.
+1. reposicion → consulta alertas pendientes y las redacta-
 2. auditor → verifica que el mensaje de reposición coincida con las alertas reales.
 
 **Condicion de corte:** si no hay alertas pendientes, no llamar al auditor. Responder directamente "No hay alertas de stock pendientes".

@@ -1,7 +1,7 @@
 """
 Sensor de validación de salida.
 Verifica que el texto devuelto por un agente cumpla con el formato esperado.
-Uso: python agentes/validar_salida.py "<texto_del_agente>" "<tipo_de_agente>"
+Uso: python agents/validar_salida.py "<texto_del_agente>" "<tipo_de_agente>"
 """
 
 import re
@@ -99,7 +99,7 @@ def validar(texto: str, tipo_agente: str) -> dict:
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
-        print("Uso: python agentes/validar_salida.py \"<texto>\" \"<tipo_agente>\"")
+        print("Uso: python agents/validar_salida.py \"<texto>\" \"<tipo_agente>\"")
         print("Tipos válidos:", ", ".join(FORMATOS.keys()))
         sys.exit(1)
 
