@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+pydantic[email]
+pandas
+openpyxl
+reportlab
+python-multipart
+pyjwt
+bcrypt
+requests

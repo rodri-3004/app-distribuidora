@@ -24,7 +24,7 @@ from reportlab.lib import colors
 
 app = FastAPI(
     title="API Distribuidora de Limpieza",
-    version="1.52",
+    version="1.53",
     description="API B2B con Modelo Profesional, Seguridad JWT, Trazabilidad, Logística y Auditoría."
 )
 
@@ -405,66 +405,104 @@ def listar_categorias():
     conexion.close()
     return categorias
 
-@app.post("/productos/importar-excel", summary="Actualizar precios y stock masivamente")
+@app.post("/productos/importar-excel", summary="Importar/Actualizar productos masivamente")
 async def importar_productos_excel(file: UploadFile = File(...), usuario: dict = Depends(usuario_actual)):
     if usuario["rol"] not in ("admin", "agente"):
-        raise HTTPException(status_code=403, detail="Acceso denegado. Solo administradores o agentes pueden importar precios.")
+        raise HTTPException(status_code=403, detail="Acceso denegado. Solo administradores o agentes pueden importar.")
+    
     contents = await file.read()
     try:
+        # 1. Leer el archivo (soporta CSV y Excel)
         if file.filename.endswith('.csv'):
             df = pd.read_csv(io.BytesIO(contents))
         else:
             df = pd.read_excel(io.BytesIO(contents))
+        
+        # 2. Normalizar los nombres de las columnas (minúsculas y sin espacios)
         df.columns = [str(c).strip().lower() for c in df.columns]
         
-        # Mapeo de columnas flexible
-        mapeo = {'codigo': ['codigo', 'cod', 'sku', 'código'], 'nombre': ['nombre', 'descripcion', 'descripción', 'producto', 'detalle'], 'precio': ['precio', 'precio final', 'precio_final', 'pvp', 'valor'], 'categoria': ['categoria', 'categoría', 'rubro', 'tipo'], 'stock': ['stock', 'stock_inicial', 'cantidad']}
+        # 3. Diccionario de mapeo flexible (acepta variaciones comunes)
+        mapeo = {
+            'codigo': ['codigo', 'cod', 'sku', 'código', 'id producto'],
+            'nombre': ['nombre', 'descripcion', 'descripción', 'producto', 'detalle', 'desc'],
+            'precio': ['precio', 'precio final', 'precio_final', 'pvp', 'valor', 'precio venta'],
+            'categoria': ['categoria', 'categoría', 'rubro', 'tipo'],
+            'stock': ['stock', 'stock_inicial', 'cantidad', 'stock fisico']
+        }
+        
+        # Renombrar las columnas encontradas
         for standard_col, variations in mapeo.items():
             for var in variations:
                 if var in df.columns:
                     df.rename(columns={var: standard_col}, inplace=True)
                     break
         
+        # 4. Validar que estén las columnas mínimas indispensables
         if 'codigo' not in df.columns or 'precio' not in df.columns:
-            raise HTTPException(status_code=400, detail="El Excel debe tener al menos las columnas 'codigo' y 'precio'.")
-
+            raise HTTPException(status_code=400, detail="La planilla debe tener al menos una columna 'codigo' y una 'precio'.")
+        
         conexion = obtener_conexion()
         cursor = conexion.cursor()
+        asegurar_esquema(cursor)
+        
         actualizados = 0
         creados = 0
         errores = 0
+        detalle_errores = []
         
+        # 5. Iterar fila por fila
         for index, row in df.iterrows():
             codigo = str(row.get('codigo', '')).strip()
-            nombre = str(row.get('nombre', 'Producto sin nombre')).strip()
             precio_raw = row.get('precio')
+            nombre = str(row.get('nombre', 'Producto sin nombre')).strip()
             categoria = str(row.get('categoria', 'General')).strip()
             
+            # Validaciones básicas
             if not codigo or pd.isna(precio_raw):
                 errores += 1
+                detalle_errores.append(f"Fila {index+2}: Faltan datos (código o precio).")
                 continue
+                
             try:
                 precio = float(precio_raw)
                 if precio <= 0:
                     raise ValueError
             except ValueError:
                 errores += 1
+                detalle_errores.append(f"Fila {index+2}: El precio '{precio_raw}' no es válido.")
                 continue
 
+            # 6. Verificar si existe o hay que crearlo
             cursor.execute("SELECT id FROM productos WHERE codigo = ?", (codigo,))
             prod_db = cursor.fetchone()
 
             if prod_db:
+                # Actualizar solo si el precio o nombre cambiaron
                 cursor.execute("UPDATE productos SET precio = ?, nombre = ?, categoria = ? WHERE codigo = ?", (precio, nombre, categoria, codigo))
                 actualizados += 1
             else:
+                # Crear nuevo producto con stock 0 o el que venga en el Excel
                 stock_inicial = int(row.get('stock', 0)) if 'stock' in row and pd.notna(row['stock']) else 0
-                cursor.execute("INSERT INTO productos (codigo, nombre, categoria, precio, stock_fisico, stock_reservado, imagen_url, activo) VALUES (?, ?, ?, ?, ?, 0, 'default.png', 1)", (codigo, nombre, categoria, precio, stock_inicial))
+                cursor.execute("""
+                    INSERT INTO productos (codigo, nombre, categoria, precio, stock_fisico, stock_reservado, imagen_url, activo)
+                    VALUES (?, ?, ?, ?, ?, 0, 'default.png', 1)
+                """, (codigo, nombre, categoria, precio, stock_inicial))
                 creados += 1
 
         conexion.commit()
         conexion.close()
-        return {"mensaje": "Importación finalizada.", "actualizados": actualizados, "creados": creados, "errores": errores}
+        
+        # 7. Devolver un reporte claro al agente/humano
+        return {
+            "mensaje": "Importación procesada.",
+            "actualizados": actualizados,
+            "creados": creados,
+            "errores": errores,
+            "detalle_errores": detalle_errores[:10]
+        }
+        
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al procesar la planilla: {str(e)}")
 

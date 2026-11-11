@@ -1,7 +1,7 @@
 ---
 name: auditor
 description: Audita cualquier resultado con números antes de que llegue al usuario. Verifica fuente, cuentas, unidades, supuestos y reglas de negocio.
-tools: Read, Bash, webfetch
+tools: Read, Bash
 model: opencode/deepseek-v4.1-flash-free
 ---
 

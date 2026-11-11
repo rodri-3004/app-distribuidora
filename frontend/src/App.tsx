@@ -587,7 +587,15 @@ export default function App() {
                   return (
                     <div key={prod.id} className="card-producto">
                       <div style={{ width: '100%', height: '180px', backgroundColor: '#f8fafc', borderRadius: '16px', marginBottom: '16px', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid #e2e8f0' }}>
-                        <img src={prod.imagen_url && prod.imagen_url !== 'default.png' ? prod.imagen_url : 'https://cdn-icons-png.flaticon.com/512/679/679720.png'} alt={prod.nombre} style={{ width: '100%', height: '100%', objectFit: 'contain', padding: '16px' }} />
+                        {/* ACA ESTA EL CAMBIO: Busca la imagen en /images/{codigo}.png */}
+                        <img 
+                          src={prod.nombre ? `/images/${encodeURIComponent(prod.nombre)}.png` : 'https://cdn-icons-png.flaticon.com/512/679/679720.png'}
+                          alt={prod.nombre} 
+                          onError={(e) => {
+                            e.currentTarget.src = 'https://cdn-icons-png.flaticon.com/512/679/679720.png';
+                          }}
+                          style={{ width: '100%', height: '100%', objectFit: 'contain', padding: '16px' }} 
+                        />
                       </div>
                       <div>
                         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
@@ -714,7 +722,6 @@ export default function App() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: '30px' }}>
                 {fechasOrdenadas.map(fecha => (
                   <div key={fecha}>
-                    {/* Encabezado del grupo de fecha */}
                     <h3 style={{ fontSize: '18px', fontWeight: 'bold', color: '#1e3a8a', marginBottom: '16px', paddingBottom: '8px', borderBottom: '2px solid #e2e8f0' }}>
                       📅 Entrega: {fecha === 'Sin fecha asignada' ? 'Sin fecha asignada' : new Date(fecha + 'T00:00:00').toLocaleDateString('es-AR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
                     </h3>
@@ -767,7 +774,6 @@ export default function App() {
 
           <div className="animate-slide-in-right" style={{ position: 'relative', marginLeft: 'auto', width: '480px', maxWidth: '100%', height: '100vh', maxHeight: '100vh', background: '#f8fafc', boxShadow: '-15px 0 40px rgba(0,0,0,0.2)', display: 'flex', flexDirection: 'column', boxSizing: 'border-box', zIndex: 2010, overflow: 'hidden' }}>
             
-            {/* Cabecera del Carrito - Blanca y limpia */}
             <div style={{ background: '#ffffff', color: '#0f172a', padding: '24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #e2e8f0', flexShrink: 0 }}>
               <div>
                 <h3 style={{ margin: '0', fontSize: '20px', fontWeight: '800', color: '#0f172a' }}>Carrito de Compras</h3>
@@ -776,10 +782,8 @@ export default function App() {
               <button onClick={() => setCarritoAbierto(false)} style={{ background: '#f1f5f9', border: 'none', color: '#334155', padding: '8px', borderRadius: '10px', cursor: 'pointer' }}><X size={20} /></button>
             </div>
 
-            {/* Zona Central - Fondo gris suave y textos oscuros */}
             <div style={{ flex: 1, overflowY: 'auto', padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px', minHeight: 0 }}>
               
-              {/* Lista de Artículos */}
               <div>
                 <h4 style={{ margin: '0 0 12px 0', fontSize: '12px', color: '#64748b', textTransform: 'uppercase', fontWeight: '700', letterSpacing: '0.5px' }}>Artículos Seleccionados ({cantidadTotalItems()})</h4>
                 {Object.keys(carrito).length === 0 ? <p style={{ color: '#64748b', fontSize: '14px', fontStyle: 'italic' }}>El carrito está vacío.</p> : (
@@ -804,13 +808,11 @@ export default function App() {
                 )}
               </div>
 
-              {/* Totalizador */}
               <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', padding: '20px', borderRadius: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span style={{ fontSize: '16px', fontWeight: '700', color: '#1e3a8a' }}>Total Pedido:</span>
                 <span style={{ fontSize: '24px', fontWeight: '800', color: '#1e3a8a' }}>${calcularTotal().toLocaleString('es-AR')}</span>
               </div>
 
-              {/* Formulario de Cliente */}
               <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '16px', padding: '24px', boxShadow: '0 2px 4px rgba(0,0,0,0.02)' }}>
                 <h4 style={{ margin: '0 0 16px 0', fontSize: '13px', color: '#1e3a8a', textTransform: 'uppercase', fontWeight: '800', letterSpacing: '0.5px' }}>Datos del Cliente</h4>
                 
@@ -873,7 +875,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* Botón de Confirmar */}
             <div style={{ padding: '24px', background: '#ffffff', borderTop: '1px solid #e2e8f0', flexShrink: 0 }}>
               <button onClick={enviarPedido} className="btn-primary" style={{ width: '100%', padding: '16px', fontSize: '16px', fontWeight: '800', borderRadius: '14px' }}>Confirmar y Generar PDF</button>
             </div>
