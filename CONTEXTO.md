@@ -1,6 +1,6 @@
 # CONTEXTO.md · Distribuidora de productos de limpieza (sistema multiagente)
 
-> Archivo de contexto del proyecto (versión 4.4). Todo asistente o agente que trabaje en este proyecto lo lee primero.
+> Archivo de contexto del proyecto (versión 4.5). Todo asistente o agente que trabaje en este proyecto lo lee primero.
 > Idioma de trabajo: español (código, nombres de tablas y mensajes).
 
 ## 1. Objetivo
@@ -44,8 +44,8 @@ Es una **prueba piloto** pensada para un caso real. La plataforma base ya está 
 ## 5. Estados del pedido
 `RECIBIDO → VALIDADO → PREPARADO → FACTURADO → ARMADO → CARGADO → EN_REPARTO → ENTREGADO → CERRADO`
 
-- `EXCEPCION`: cualquier etapa puede pasar a este estado; una persona lo resuelve.
-- `CANCELADO`: solo desde `RECIBIDO` o `VALIDADO` (libera la reserva).
+- `EXCEPCION`: cualquier etapa puede pasar a este estado; una persona lo resuelve. Desde `EXCEPCION` se puede volver a cualquier estado anterior o pasar a `CANCELADO`.
+- `CANCELADO`: solo desde `RECIBIDO`, `VALIDADO` o `EXCEPCION` (libera la reserva).
 - Cada cambio de estado se registra en la tabla `pedido_historial_estados` con fecha, autor y evidencia.
 
 ### Traducción de estados para la web
@@ -60,9 +60,9 @@ Es una **prueba piloto** pensada para un caso real. La plataforma base ya está 
 ## 6. Reglas de negocio
 - **R1 · Precio:** si el precio del pedido difiere del vigente, el pedido queda observado y no se corrige solo.
 - **R2 · Stock:** disponible = físico − reservado. Si el producto baja de su `stock_minimo`, se genera una alerta silenciosa en `alertas_stock`.
-- **R3 · Crédito:** el cliente debe estar `ACTIVO` y `saldo_actual + total` no puede superar `limite_credito`; si no, excepción.
+- **R3 · Crédito:** el cliente debe estar `ACTIVO` y su `saldo_actual` no puede superar el `limite_credito`; si no, excepción.
 - **R4 · Facturación:** solo se factura un pedido `PREPARADO`.
-- **R5 · Cuenta corriente:** al emitir la factura se registra un movimiento y sube el saldo; un pago cargado lo baja.
+- **R5 · Cuenta corriente:** al crear el pedido se registra un movimiento y sube el saldo; un pago cargado lo baja.
 - **R6 · Cambios masivos:** siempre en dos pasos (vista previa y aplicación), con confirmación del Nivel 0 e historial reversible.
 - **R7 · Excepciones:** toda excepción tiene motivo y queda abierta hasta que una persona la resuelve.
 - **R8 · Acceso y trazabilidad:** solo por API con identidad; cada acción deja un evento con evidencia en `pedido_historial_estados` y en `eventos_log`.
@@ -75,7 +75,7 @@ Es una **prueba piloto** pensada para un caso real. La plataforma base ya está 
 |---|---|---|
 | Se confirma el pedido (`POST /pedidos`) | sin cambio | + cantidad (solo si alcanza el disponible; si no, error 400) |
 | Se prepara (`POST /pedidos/{id}/estado` con estado `PREPARADO`) | − cantidad | − cantidad |
-| Se cancela estando `RECIBIDO` o `VALIDADO` | sin cambio | − cantidad |
+| Se cancela estando `RECIBIDO`, `VALIDADO` o `EXCEPCION` | sin cambio | − cantidad |
 
 **Control de consistencia:** `stock_reservado` de cada producto debe ser igual a las unidades de sus pedidos en `RECIBIDO` o `VALIDADO`. Si hay diferencias, ejecutar `base_datos/reconciliar_stock.py`.
 
@@ -122,7 +122,7 @@ APP-DISTRIBUIDORA-PROCESOS/
 │ └── main.py
 ├── frontend/
 │ ├── (archivos de React)
-├── agentes/
+├── agents/
 │ ├── supervisor.md
 │ ├── playbook.md
 │ ├── loop.md
@@ -163,7 +163,7 @@ APP-DISTRIBUIDORA-PROCESOS/
 - Chequeo final del harness: `python check.py`.
 
 ## 15. Fase actual
-**Fase 1 · Agentes en Paseo.sh.** La plataforma está 100% completa y funcional. Las identidades de los 13 agentes están creadas. Los archivos `.md` de instrucciones están en la carpeta `agentes/` con sus modelos gratuitos asignados (routing). El harness cuenta con sensores (test de integración y validador de salida) y memoria (PROGRESS.md, features.json). El siguiente paso es abrir Paseo.sh, cargar la carpeta del proyecto y darle la orden al Supervisor para que empiece a operar.
+**Fase 1 · Agentes en Paseo.sh.** La plataforma está 100% completa y funcional. Las identidades de los 13 agentes están creadas. Los archivos `.md` de instrucciones están en la carpeta `agents/` con sus modelos gratuitos asignados (routing). El harness cuenta con sensores (test de integración y validador de salida) y memoria (PROGRESS.md, features.json). El siguiente paso es abrir Paseo.sh, cargar la carpeta del proyecto y darle la orden al Supervisor para que empiece a operar.
 
 ## 16. Seguridad: notas del piloto local
 - `/recuperar-password` y `/registro` devuelven el código en la respuesta (`token_debug`) y `/activar` no verifica el código: aceptable solo en la PC local.

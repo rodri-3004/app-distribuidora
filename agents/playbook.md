@@ -45,8 +45,6 @@ Excepciones abiertas: []
 Evidencia: [evento_id1, evento_id2, ...]
 ```
 
----
-
 ## Comando 2 · Consulta informativa (no delegar)
 
 **Cuándo usarlo:** el Nivel 0 pregunta algo como "¿cuántos pedidos hay?", "¿qué estado tiene el pedido 5?".
@@ -76,7 +74,7 @@ Evidencia: [evento_id1, evento_id2, ...]
 **Cuándo usarlo:** el Nivel 0 dice "revisá el stock" o "¿qué falta reponer?".
 
 **Orden:**
-1. reposicion → consulta alertas pendientes y las redacta-
+1. reposicion → consulta alertas pendientes y las redacta.
 2. auditor → verifica que el mensaje de reposición coincida con las alertas reales.
 
 **Condicion de corte:** si no hay alertas pendientes, no llamar al auditor. Responder directamente "No hay alertas de stock pendientes".

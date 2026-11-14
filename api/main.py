@@ -24,7 +24,7 @@ from reportlab.lib import colors
 
 app = FastAPI(
     title="API Distribuidora de Limpieza",
-    version="1.53",
+    version="1.54",
     description="API B2B con Modelo Profesional, Seguridad JWT, Trazabilidad, Logística y Auditoría."
 )
 
@@ -412,16 +412,13 @@ async def importar_productos_excel(file: UploadFile = File(...), usuario: dict =
     
     contents = await file.read()
     try:
-        # 1. Leer el archivo (soporta CSV y Excel)
         if file.filename.endswith('.csv'):
             df = pd.read_csv(io.BytesIO(contents))
         else:
             df = pd.read_excel(io.BytesIO(contents))
         
-        # 2. Normalizar los nombres de las columnas (minúsculas y sin espacios)
         df.columns = [str(c).strip().lower() for c in df.columns]
         
-        # 3. Diccionario de mapeo flexible (acepta variaciones comunes)
         mapeo = {
             'codigo': ['codigo', 'cod', 'sku', 'código', 'id producto'],
             'nombre': ['nombre', 'descripcion', 'descripción', 'producto', 'detalle', 'desc'],
@@ -430,14 +427,12 @@ async def importar_productos_excel(file: UploadFile = File(...), usuario: dict =
             'stock': ['stock', 'stock_inicial', 'cantidad', 'stock fisico']
         }
         
-        # Renombrar las columnas encontradas
         for standard_col, variations in mapeo.items():
             for var in variations:
                 if var in df.columns:
                     df.rename(columns={var: standard_col}, inplace=True)
                     break
         
-        # 4. Validar que estén las columnas mínimas indispensables
         if 'codigo' not in df.columns or 'precio' not in df.columns:
             raise HTTPException(status_code=400, detail="La planilla debe tener al menos una columna 'codigo' y una 'precio'.")
         
@@ -450,14 +445,12 @@ async def importar_productos_excel(file: UploadFile = File(...), usuario: dict =
         errores = 0
         detalle_errores = []
         
-        # 5. Iterar fila por fila
         for index, row in df.iterrows():
             codigo = str(row.get('codigo', '')).strip()
             precio_raw = row.get('precio')
             nombre = str(row.get('nombre', 'Producto sin nombre')).strip()
             categoria = str(row.get('categoria', 'General')).strip()
             
-            # Validaciones básicas
             if not codigo or pd.isna(precio_raw):
                 errores += 1
                 detalle_errores.append(f"Fila {index+2}: Faltan datos (código o precio).")
@@ -472,16 +465,13 @@ async def importar_productos_excel(file: UploadFile = File(...), usuario: dict =
                 detalle_errores.append(f"Fila {index+2}: El precio '{precio_raw}' no es válido.")
                 continue
 
-            # 6. Verificar si existe o hay que crearlo
             cursor.execute("SELECT id FROM productos WHERE codigo = ?", (codigo,))
             prod_db = cursor.fetchone()
 
             if prod_db:
-                # Actualizar solo si el precio o nombre cambiaron
                 cursor.execute("UPDATE productos SET precio = ?, nombre = ?, categoria = ? WHERE codigo = ?", (precio, nombre, categoria, codigo))
                 actualizados += 1
             else:
-                # Crear nuevo producto con stock 0 o el que venga en el Excel
                 stock_inicial = int(row.get('stock', 0)) if 'stock' in row and pd.notna(row['stock']) else 0
                 cursor.execute("""
                     INSERT INTO productos (codigo, nombre, categoria, precio, stock_fisico, stock_reservado, imagen_url, activo)
@@ -492,7 +482,6 @@ async def importar_productos_excel(file: UploadFile = File(...), usuario: dict =
         conexion.commit()
         conexion.close()
         
-        # 7. Devolver un reporte claro al agente/humano
         return {
             "mensaje": "Importación procesada.",
             "actualizados": actualizados,
@@ -590,10 +579,19 @@ def actualizar_cliente(cliente_id: int, c: ClienteModel, usuario_sesion: dict = 
         asegurar_esquema(cursor)
         cursor.execute("SELECT usuario_dueno FROM clientes WHERE id = ?", (cliente_id,))
         dueno_row = cursor.fetchone()
-        dueno = dueno_row["usuario_dueno"] if dueno_row else c.usuario_dueno
-        cursor.execute("UPDATE clientes SET razon_social=?, cuit=?, direccion_entrega=?, telefono=?, condicion_fiscal=?, medio_pago=?, usuario_dueno=? WHERE id=?", (c.razon_social, c.cuit, c.direccion, c.telefono, c.condicion_fiscal, c.medio_pago, dueno, cliente_id))
+        if not dueno_row:
+            raise HTTPException(status_code=404, detail="Cliente no encontrado.")
+        
+        username = usuario_sesion.get("usuario") or usuario_sesion["email"].split("@")[0]
+        if usuario_sesion["rol"] == "cliente" and dueno_row["usuario_dueno"] != username:
+            raise HTTPException(status_code=403, detail="No tenés permiso para modificar este cliente.")
+
+        cursor.execute("UPDATE clientes SET razon_social=?, cuit=?, direccion_entrega=?, telefono=?, condicion_fiscal=?, medio_pago=?, usuario_dueno=? WHERE id=?", (c.razon_social, c.cuit, c.direccion, c.telefono, c.condicion_fiscal, c.medio_pago, dueno_row["usuario_dueno"], cliente_id))
         conexion.commit()
         return {"mensaje": "Cliente actualizado con éxito"}
+    except HTTPException as he:
+        conexion.rollback()
+        raise he
     except Exception as e:
         conexion.rollback()
         raise HTTPException(status_code=500, detail=str(e))
@@ -605,9 +603,24 @@ def eliminar_cliente(cliente_id: int, usuario_sesion: dict = Depends(usuario_act
     conexion = obtener_conexion()
     cursor = conexion.cursor()
     try:
+        cursor.execute("SELECT usuario_dueno FROM clientes WHERE id = ?", (cliente_id,))
+        dueno_row = cursor.fetchone()
+        if not dueno_row:
+            raise HTTPException(status_code=404, detail="Cliente no encontrado.")
+        
+        username = usuario_sesion.get("usuario") or usuario_sesion["email"].split("@")[0]
+        if usuario_sesion["rol"] == "cliente" and dueno_row["usuario_dueno"] != username:
+            raise HTTPException(status_code=403, detail="No tenés permiso para eliminar este cliente.")
+
         cursor.execute("DELETE FROM clientes WHERE id = ?", (cliente_id,))
         conexion.commit()
         return {"mensaje": "Cliente eliminado con éxito"}
+    except HTTPException as he:
+        conexion.rollback()
+        raise he
+    except sqlite3.IntegrityError:
+        conexion.rollback()
+        raise HTTPException(status_code=400, detail="No se puede eliminar el cliente porque tiene pedidos asociados.")
     except Exception as e:
         conexion.rollback()
         raise HTTPException(status_code=500, detail=str(e))
@@ -742,7 +755,6 @@ def crear_pedido(pedido: PedidoCreate, usuario_sesion: dict = Depends(usuario_ac
                 raise HTTPException(status_code=400, detail="Stock agotado.")
             verificar_alerta_stock(cursor, d["producto_id"])
         
-        # D12: El saldo sube al crear el pedido
         cursor.execute("UPDATE clientes SET saldo_actual = saldo_actual + ? WHERE id = ?", (total, cliente_id))
         conexion.commit()
 
@@ -811,11 +823,9 @@ def obtener_pedido(pedido_id: int, usuario_sesion: dict = Depends(usuario_actual
             raise HTTPException(status_code=404, detail="Pedido no encontrado.")
         pedido = dict(pedido_row)
         
-        # E1: Validar privacidad
         if usuario_sesion["rol"] == "cliente" and pedido["usuario_id"] != usuario_sesion["id"]:
             raise HTTPException(status_code=403, detail="No tenés permiso para ver este pedido.")
 
-        # E6: Traer estado del cliente
         cursor.execute("SELECT id, razon_social, cuit, direccion_entrega, saldo_actual, limite_credito, estado FROM clientes WHERE id = ?", (pedido["cliente_id"],))
         cliente_row = cursor.fetchone()
         if cliente_row:
@@ -942,7 +952,6 @@ def cambiar_estado_pedido(pedido_id: int, datos: CambioEstadoModel, usuario_sesi
                     verificar_alerta_stock(cursor, d["producto_id"])
                     
         if nuevo == "CANCELADO":
-            # E2: Evitar el doble descuento si ya fue preparado
             cursor.execute("SELECT COUNT(*) as count FROM pedido_historial_estados WHERE pedido_id = ? AND estado_nuevo = 'PREPARADO'", (pedido_id,))
             if cursor.fetchone()["count"] > 0:
                 raise HTTPException(status_code=409, detail="No se puede cancelar un pedido que ya fue preparado.")

@@ -17,13 +17,17 @@ TABLAS = [
         razon_social TEXT NOT NULL,
         cuit TEXT NOT NULL UNIQUE,
         direccion_entrega TEXT,
+        telefono TEXT DEFAULT '',
+        condicion_fiscal TEXT DEFAULT 'Responsable Inscripto',
+        medio_pago TEXT DEFAULT 'Efectivo contra entrega',
         limite_credito REAL NOT NULL DEFAULT 0 CHECK (limite_credito >= 0),
         saldo_actual REAL NOT NULL DEFAULT 0,
         estado TEXT NOT NULL DEFAULT 'ACTIVO'
-            CHECK (estado IN ('ACTIVO', 'BLOQUEADO_POR_DEUDA'))
+            CHECK (estado IN ('ACTIVO', 'BLOQUEADO_POR_DEUDA')),
+        usuario_dueno TEXT DEFAULT 'admin'
     )
     """,
-    # 2. Tabla de Usuarios (Actualizada con campos de registro, Google OAuth y verificación)
+    # 2. Tabla de Usuarios (Actualizada con el rol 'agente' y columnas nuevas)
     """
     CREATE TABLE IF NOT EXISTS usuarios (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -36,32 +40,23 @@ TABLAS = [
         google_id TEXT UNIQUE,
         verificado INTEGER DEFAULT 0,
         token_verificacion TEXT,
-        rol TEXT NOT NULL DEFAULT 'cliente' CHECK (rol IN ('admin', 'cliente')),
+        rol TEXT NOT NULL DEFAULT 'cliente' 
+            CHECK (rol IN ('admin', 'cliente', 'agente')),
         cliente_id INTEGER,
         FOREIGN KEY (cliente_id) REFERENCES clientes (id)
     )
     """,
-    # 3. Tabla de Clientes Propios (Cartera comercial que gestiona cada usuario)
-    """
-    CREATE TABLE IF NOT EXISTS clientes_propios (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        usuario_id INTEGER NOT NULL,
-        nombre_razon_social TEXT NOT NULL,
-        direccion TEXT NOT NULL,
-        cuit_dni TEXT NOT NULL,
-        tipo_condicion TEXT NOT NULL,
-        FOREIGN KEY (usuario_id) REFERENCES usuarios (id) ON DELETE CASCADE
-    )
-    """,
-    # 4. Tabla de Productos
+    # 3. Tabla de Productos (Con stock_minimo y categoria)
     """
     CREATE TABLE IF NOT EXISTS productos (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         codigo TEXT NOT NULL UNIQUE,
         nombre TEXT NOT NULL,
+        categoria TEXT DEFAULT 'General',
         precio REAL NOT NULL CHECK (precio > 0),
         stock_fisico INTEGER NOT NULL DEFAULT 0 CHECK (stock_fisico >= 0),
         stock_reservado INTEGER NOT NULL DEFAULT 0 CHECK (stock_reservado >= 0),
+        stock_minimo INTEGER DEFAULT 50,
         peso_kg REAL CHECK (peso_kg IS NULL OR peso_kg > 0),
         volumen_dm3 REAL CHECK (volumen_dm3 IS NULL OR volumen_dm3 > 0),
         imagen_url TEXT DEFAULT 'default.png',
@@ -81,7 +76,7 @@ TABLAS = [
         FOREIGN KEY (producto_id) REFERENCES productos (id)
     )
     """,
-    # 5. Tabla de Pedidos (Actualizada con usuario_id y pdf_path para subagentes)
+    # 4. Tabla de Pedidos
     """
     CREATE TABLE IF NOT EXISTS pedidos (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,11 +84,11 @@ TABLAS = [
         usuario_id INTEGER,
         fecha TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         estado TEXT NOT NULL DEFAULT 'RECIBIDO' 
-            CHECK (estado IN ('RECIBIDO', 'VALIDADO', 'PREPARADO', 'FACTURADO', 'ARMADO', 'CARGADO', 'EN_REPARTO', 'ENTREGADO', 'CERRADO', 'EXCEPCION')),
+            CHECK (estado IN ('RECIBIDO', 'VALIDADO', 'PREPARADO', 'FACTURADO', 'ARMADO', 'CARGADO', 'EN_REPARTO', 'ENTREGADO', 'CERRADO', 'EXCEPCION', 'CANCELADO')),
+        estado_anterior TEXT,
         total REAL NOT NULL DEFAULT 0 CHECK (total >= 0),
-        mail_id TEXT,
+        fecha_entrega TEXT,
         observaciones_agente TEXT,
-        pdf_path TEXT,
         FOREIGN KEY (cliente_id) REFERENCES clientes (id),
         FOREIGN KEY (usuario_id) REFERENCES usuarios (id)
     )
@@ -129,7 +124,7 @@ TABLAS = [
         subtotal REAL NOT NULL CHECK (subtotal >= 0),
         impuestos REAL NOT NULL CHECK (impuestos >= 0),
         total REAL NOT NULL CHECK (total >= 0),
-        estado TEXT NOT NULL DEFAULT 'BORRADOR' CHECK (estado IN ('BORRADOR', 'EMITIDA', 'ANULADA')),
+        estado TEXT NOT NULL DEFAULT 'EMITIDA' CHECK (estado IN ('BORRADOR', 'EMITIDA', 'ANULADA')),
         FOREIGN KEY (pedido_id) REFERENCES pedidos (id)
     )
     """,
@@ -137,7 +132,7 @@ TABLAS = [
     CREATE TABLE IF NOT EXISTS armados (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         pedido_id INTEGER NOT NULL,
-        factura_id INTEGER NOT NULL,
+        factura_id INTEGER,
         bultos INTEGER NOT NULL CHECK (bultos > 0),
         resultado TEXT NOT NULL DEFAULT 'OK' CHECK (resultado IN ('OK', 'DIFERENCIAS')),
         detalle_diferencias TEXT,
@@ -201,6 +196,27 @@ TABLAS = [
         fecha TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (pedido_id) REFERENCES pedidos (id)
     )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS pedido_historial_estados (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pedido_id INTEGER NOT NULL,
+        estado_anterior TEXT,
+        estado_nuevo TEXT NOT NULL,
+        fecha TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        cambiado_por TEXT NOT NULL,
+        FOREIGN KEY (pedido_id) REFERENCES pedidos (id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS alertas_stock (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        producto_id INTEGER NOT NULL,
+        stock_actual INTEGER NOT NULL,
+        fecha_generacion TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        estado TEXT NOT NULL DEFAULT 'PENDIENTE' CHECK (estado IN ('PENDIENTE', 'REVISADA', 'RESUELTA')),
+        FOREIGN KEY (producto_id) REFERENCES productos (id)
+    )
     """
 ]
 
@@ -245,7 +261,7 @@ def crear_tablas():
     
     insertar_datos_prueba(conexion)
     conexion.close()
-    print("Base de datos estructurada por completo con tablas de usuarios, clientes propios y trazabilidad.")
+    print("Base de datos estructurada por completo con el esquema final v1.54.")
 
 if __name__ == "__main__":
     crear_tablas()
